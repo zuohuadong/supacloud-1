@@ -8,7 +8,9 @@ import {
 import {
   ApplicationPromotions, ApplicationPromotionError, type ApplicationPromotionDependencies,
 } from "../../src/services/application-promotion";
-import type { ApplicationPromotionOwner } from "../../src/services/application-promotion-ownership";
+import {
+  ApplicationPromotionOwnershipError, type ApplicationPromotionOwner,
+} from "../../src/services/application-promotion-ownership";
 import type { ApplicationActiveRecord } from "../../src/services/application-activation";
 import { ApplicationMigrations } from "../../src/services/application-migrations";
 import { projectMutationResourceKey, type ProjectMutationState } from "../../src/services/project-mutation.service";
@@ -338,6 +340,16 @@ test("promotion checks both exact environment scopes before observation and arou
   ]).flat());
 });
 
+function promotionOwner(): ApplicationPromotionOwner {
+  return {
+    lease: {
+      projectRef: "production", mutationId: activation,
+      leaseToken: "21234567-89ab-4def-8123-456789abcdef", fencingEpoch: 3,
+    },
+    principal: { type: "admin", id: "admin:release" }, requestFingerprint: "d".repeat(64),
+  };
+}
+
 test("owned plan revalidation bypasses only the exact target owner and still checks the source", async () => {
   const checks: string[] = [];
   const owned: string[] = [];
@@ -346,17 +358,63 @@ test("owned plan revalidation bypasses only the exact target owner and still che
       owned.push(`${scope.projectRef}:${scope.environmentId}:${candidate.lease.mutationId}`);
     },
   });
-  const owner: ApplicationPromotionOwner = {
-    lease: {
-      projectRef: "production", mutationId: activation, leaseToken: activation, fencingEpoch: 3,
-    },
-    principal: { type: "admin", id: "admin:release" },
-    requestFingerprint: "d".repeat(64),
-  };
+  const owner = promotionOwner();
   const plan = await f.service.readOwnedPlan(f.input, owner);
   expect(plan.action).toBe("promote");
   expect(owned).toEqual(Array(3).fill("production:production:01234567-89ab-4def-8123-456789abcdef"));
   expect(checks).toEqual(Array(3).fill("idle:staging:staging"));
+});
+
+test("a target owner cannot bypass a busy source or enable public planning", async () => {
+  let ownershipChecks = 0, sourceBusy = false;
+  const f = fixture(async scope => {
+    if (sourceBusy || scope.projectRef === "production") {
+      throw new ApplicationPromotionError("APPLICATION_PROMOTION_BUSY", 409);
+    }
+  }, { assertOwned: async () => { ownershipChecks++; } });
+  await expect(f.service.readPlan(f.input)).rejects.toMatchObject({ code: "APPLICATION_PROMOTION_BUSY" });
+  expect(ownershipChecks).toBe(0);
+  expect((await f.service.readOwnedPlan(f.input, promotionOwner())).action).toBe("promote");
+  sourceBusy = true;
+  const before = ownershipChecks;
+  await expect(f.service.readOwnedPlan(f.input, promotionOwner())).rejects.toMatchObject({
+    code: "APPLICATION_PROMOTION_BUSY", statusCode: 409,
+  });
+  expect(ownershipChecks).toBe(before);
+});
+
+test.each([1, 2, 3])("ownership lost at check %s rejects the plan without exposing the lease", async lostAt => {
+  let checks = 0;
+  const owner = promotionOwner();
+  const f = fixture(async () => {}, {
+    assertOwned: async () => {
+      if (++checks === lostAt) throw new ApplicationPromotionOwnershipError();
+    },
+  });
+  await expect(f.service.readOwnedPlan(f.input, owner)).rejects.toMatchObject({
+    code: "APPLICATION_PROMOTION_OWNERSHIP_LOST", message: "APPLICATION_PROMOTION_OWNERSHIP_LOST", statusCode: 409,
+  });
+  expect(checks).toBe(lostAt);
+  expect(f.reads()).toBe(lostAt === 1 ? 0 : 1);
+});
+
+test("owned planning snapshots the request and lease before asynchronous observations", async () => {
+  const owner = promotionOwner();
+  const inputScopes: string[] = [], epochs: number[] = [];
+  const f = fixture(async () => {
+    owner.lease.fencingEpoch++;
+    f.input.environmentId = "changed";
+  }, {
+    assertOwned: async (scope, candidate) => {
+      inputScopes.push(scope.environmentId);
+      epochs.push(candidate.lease.fencingEpoch);
+    },
+  });
+  const plan = await f.service.readOwnedPlan(f.input, owner);
+  expect(plan.environment_id).toBe("production");
+  expect(inputScopes).toEqual(["production", "production", "production"]);
+  expect(epochs).toEqual([3, 3, 3]);
+  expect(JSON.stringify(plan)).not.toContain(owner.lease.leaseToken);
 });
 
 for (const noOp of [false, true]) {

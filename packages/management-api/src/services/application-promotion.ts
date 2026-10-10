@@ -107,7 +107,7 @@ export class ApplicationPromotions {
     const target = {
       projectRef: input.projectRef, applicationId: input.applicationId, environmentId: input.environmentId,
     };
-    if (owner) await this.assertOwned(target, owner);
+    if (owner) await this.assertOwned(target, structuredClone(owner));
     else await this.assertIdle(target);
   }
 

@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerReleaseTools } from "./release-tools";
+import { authorizeExecution, executionMode } from "../execution-policy";
+import type { ResolvedContext } from "../context";
 
 const PROJECT_REF = "proj";
 const CREATED_AT = "2026-08-17T00:00:00.000Z";
@@ -108,77 +111,300 @@ test("logical backup list returns only the safe verified receipt projection", as
     expect(response.content[0].text).not.toContain("/private/archive.dump");
 });
 
-test("logical backup create requires matching pre/post inventory evidence", async () => {
+test("logical backup create sends one stable ID and verifies that exact receipt", async () => {
     const requests: Array<{ method: "get" | "post"; path: string; options?: Record<string, unknown> }> = [];
-    let inventoryReads = 0;
+    const backupId = `logical-full_${PROJECT_REF}_${"c".repeat(32)}`;
     const callback = captureReleaseTool({
         get: async (path: string, options: Record<string, unknown>) => {
             requests.push({ method: "get", path, options });
-            inventoryReads += 1;
             return {
                 ok: true,
                 status: 200,
-                data: { backups: inventoryReads === 1 ? [] : [verifiedBackup()] },
+                data: { backup: verifiedBackup({ backup_id: backupId }) },
             };
         },
-        postReleaseMutation: async (path: string, _body: unknown, options: Record<string, unknown>) => {
-            requests.push({ method: "post", path, options });
-            return { ok: true, status: 200, data: { backup: verifiedBackup() } };
+        postReleaseMutation: async (path: string, body: unknown, options: Record<string, unknown>) => {
+            requests.push({ method: "post", path, options: { ...options, body } });
+            return { ok: true, status: 200, data: { backup: verifiedBackup({ backup_id: backupId }) } };
         },
     });
 
-    const response = await callback({ action: "logical_backup_create" });
+    const response = await callback({ action: "logical_backup_create", backup_id: backupId });
     const result = payload(response);
 
     expect(requests).toEqual([
         {
-            method: "get",
-            path: "/v1/projects/proj/database/backups/logical",
-            options: { maxJsonBytes: 1024 * 1024, responseTimeoutMs: 5_000 },
-        },
-        {
             method: "post",
             path: "/v1/projects/proj/database/backups/logical",
-            options: { timeoutMs: 36 * 60_000 },
+            options: { timeoutMs: 36 * 60_000, body: { backup_id: backupId } },
         },
         {
             method: "get",
-            path: "/v1/projects/proj/database/backups/logical",
-            options: { maxJsonBytes: 1024 * 1024, responseTimeoutMs: 5_000 },
+            path: `/v1/projects/proj/database/backups/logical/${backupId}`,
+            options: { maxJsonBytes: 64 * 1024, responseTimeoutMs: 5_000 },
         },
     ]);
     expect(result).toMatchObject({
         ok: true,
         operation: "release.logical_backup.create",
-        backup: { backup_id: BACKUP_ID, sha256: SHA256 },
+        backup: { backup_id: backupId, sha256: SHA256 },
     });
 });
 
-test("logical backup create fails closed when post-mutation inventory is ambiguous", async () => {
+test("logical backup create preserves the stable ID when exact readback is ambiguous", async () => {
     const secondBackup = verifiedBackup({ backup_id: `logical-full_${PROJECT_REF}_${"c".repeat(32)}` });
-    let inventoryReads = 0;
+    const backupId = `logical-full_${PROJECT_REF}_${"d".repeat(32)}`;
     const callback = captureReleaseTool({
         get: async () => {
-            inventoryReads += 1;
             return {
                 ok: true,
                 status: 200,
-                data: { backups: inventoryReads === 1 ? [] : [verifiedBackup(), secondBackup] },
+                data: { backups: [verifiedBackup(), secondBackup] },
             };
         },
-        postReleaseMutation: async () => ({ ok: true, status: 200, data: { backup: verifiedBackup() } }),
+        postReleaseMutation: async () => ({
+            ok: true, status: 200, data: { backup: verifiedBackup({ backup_id: backupId }) },
+        }),
     });
 
-    const response = await callback({ action: "logical_backup_create" });
+    const response = await callback({ action: "logical_backup_create", backup_id: backupId });
 
     expect(response.isError).toBe(true);
     expect(payload(response)).toMatchObject({
         ok: false,
         operation: "release.logical_backup.create",
         error: { code: "OUTCOME_UNKNOWN", http_status: 200 },
+        project_ref: PROJECT_REF,
+        backup_id: backupId,
     });
     expect(response.content[0].text).not.toContain("private_database_name");
 });
+
+test("logical backup status verifies one exact ID without reading the full inventory", async () => {
+    const requests: Array<{ path: string; options: Record<string, unknown> }> = [];
+    const callback = captureReleaseTool({
+        get: async (path: string, options: Record<string, unknown>) => {
+            requests.push({ path, options });
+            return { ok: true, status: 200, data: { backup: verifiedBackup() } };
+        },
+    });
+
+    const response = await callback({ action: "logical_backup_status", backup_id: BACKUP_ID });
+
+    expect(requests).toEqual([{
+        path: `/v1/projects/${PROJECT_REF}/database/backups/logical/${BACKUP_ID}`,
+        options: { maxJsonBytes: 64 * 1024, responseTimeoutMs: 5_000 },
+    }]);
+    expect(payload(response)).toMatchObject({
+        ok: true,
+        operation: "release.logical_backup.status",
+        project_ref: PROJECT_REF,
+        backup_id: BACKUP_ID,
+        backup: { backup_id: BACKUP_ID, sha256: SHA256 },
+    });
+    expect(response.content[0].text).not.toContain("private_database_name");
+    expect(response.content[0].text).not.toContain("private-receipt-hmac");
+});
+
+test("logical backup create generates its identity before dispatch and reuses it for readback", async () => {
+    let backupId = "";
+    const requests: string[] = [];
+    const callback = captureReleaseTool({
+        postReleaseMutation: async (path: string, body: { backup_id: string }) => {
+            backupId = body.backup_id;
+            requests.push(`POST:${path}`);
+            expect(backupId).toMatch(/^logical-full_proj_[a-f0-9]{32}$/);
+            return { ok: true, status: 200, data: { backup: verifiedBackup({ backup_id: backupId }) } };
+        },
+        get: async (path: string) => {
+            requests.push(`GET:${path}`);
+            return { ok: true, status: 200, data: { backup: verifiedBackup({ backup_id: backupId }) } };
+        },
+    });
+    const result = payload(await callback({ action: "logical_backup_create" }));
+    expect(result).toMatchObject({ ok: true, project_ref: PROJECT_REF, backup_id: backupId });
+    expect(requests).toEqual([
+        "POST:/v1/projects/proj/database/backups/logical",
+        `GET:/v1/projects/proj/database/backups/logical/${backupId}`,
+    ]);
+});
+
+test.each([
+    { ok: false, status: 0, data: null, transportError: true },
+    { ok: false, status: 200, data: null, responseReadError: true },
+    { ok: false, status: 503, data: null },
+    { ok: false, status: 408, data: null },
+])("lost creation responses use exact observation, never another POST: %j", async mutation => {
+    let writes = 0, reads = 0;
+    const callback = captureReleaseTool({
+        postReleaseMutation: async () => { writes++; return mutation; },
+        get: async (path: string) => {
+            reads++;
+            expect(path).toEndWith(`/logical/${BACKUP_ID}`);
+            return { ok: true, status: 200, data: { backup: verifiedBackup() } };
+        },
+    });
+    const result = payload(await callback({ action: "logical_backup_create", backup_id: BACKUP_ID }));
+    expect(writes).toBe(1);
+    expect(reads).toBe(1);
+    expect(result).toMatchObject({
+        ok: false, backup_verified: true, creation_confirmed: false,
+        error: { code: "OUTCOME_UNKNOWN" },
+        backup_id: BACKUP_ID, backup: { backup_id: BACKUP_ID, sha256: SHA256 },
+    });
+});
+
+test.each([401, 403, 409])("definite creation failure %i is not replaced by readback success", async status => {
+    let writes = 0, reads = 0;
+    const callback = captureReleaseTool({
+        postReleaseMutation: async () => { writes++; return { ok: false, status, data: { secret: "private" } }; },
+        get: async () => { reads++; return { ok: true, status: 200, data: { backup: verifiedBackup() } }; },
+    });
+    const result = payload(await callback({ action: "logical_backup_create", backup_id: BACKUP_ID }));
+    expect(writes).toBe(1);
+    expect(reads).toBe(0);
+    expect(result).toMatchObject({ ok: false, backup_id: BACKUP_ID, error: { code: "HTTP_ERROR", http_status: status } });
+});
+
+test.each([404, 409, 503])("uncertain creation retains its ID if exact observation returns %i", async status => {
+    let writes = 0;
+    const callback = captureReleaseTool({
+        postReleaseMutation: async () => {
+            writes++;
+            return { ok: false, status: 0, data: null, transportError: true };
+        },
+        get: async () => ({ ok: false, status, data: { password: "do-not-reflect" } }),
+    });
+    const response = await callback({ action: "logical_backup_create", backup_id: BACKUP_ID });
+    expect(writes).toBe(1);
+    expect(response.isError).toBe(true);
+    expect(payload(response)).toMatchObject({
+        ok: false, project_ref: PROJECT_REF, backup_id: BACKUP_ID,
+        error: { code: "OUTCOME_UNKNOWN", http_status: null },
+    });
+    expect(response.content[0].text).not.toContain("do-not-reflect");
+});
+
+test("thrown providers preserve creation identity without reflecting errors", async () => {
+    let writes = 0, reads = 0;
+    const callback = captureReleaseTool({
+        postReleaseMutation: async () => { writes++; throw new Error("token=private /path"); },
+        get: async () => { reads++; throw new Error("password=private /path"); },
+    });
+    const response = await callback({ action: "logical_backup_create", backup_id: BACKUP_ID });
+    expect(writes).toBe(1);
+    expect(reads).toBe(1);
+    expect(payload(response)).toMatchObject({ ok: false, backup_id: BACKUP_ID, error: { code: "OUTCOME_UNKNOWN" } });
+    expect(response.content[0].text).not.toContain("private");
+});
+
+test.each([
+    { mutationId: `logical-full_proj_${"d".repeat(32)}`, observationSha: SHA256 },
+    { mutationId: BACKUP_ID, observationSha: "d".repeat(64) },
+])("successful creation requires matching mutation and exact observation: %j", async ({ mutationId, observationSha }) => {
+    const callback = captureReleaseTool({
+        postReleaseMutation: async () => ({
+            ok: true, status: 200, data: { backup: verifiedBackup({ backup_id: mutationId }) },
+        }),
+        get: async () => ({ ok: true, status: 200, data: { backup: verifiedBackup({ sha256: observationSha }) } }),
+    });
+    expect(payload(await callback({ action: "logical_backup_create", backup_id: BACKUP_ID }))).toMatchObject({
+        ok: false, backup_id: BACKUP_ID, error: { code: "OUTCOME_UNKNOWN" },
+    });
+});
+
+test.each([404, 409, 503])("backup status preserves exact identity on HTTP %i", async status => {
+    const callback = captureReleaseTool({
+        get: async () => ({ ok: false, status, data: { credentials: "do-not-reflect" } }),
+    });
+    const response = await callback({ action: "logical_backup_status", backup_id: BACKUP_ID });
+    expect(payload(response)).toMatchObject({
+        ok: false, project_ref: PROJECT_REF, backup_id: BACKUP_ID, error: { code: "HTTP_ERROR", http_status: status },
+    });
+    expect(response.content[0].text).not.toContain("do-not-reflect");
+});
+
+test.each([
+    "../escape", `logical-full_other_${"b".repeat(32)}`, `logical-full_proj-longer_${"b".repeat(32)}`,
+    `logical-full_proj_${"B".repeat(32)}`,
+])("invalid or foreign backup ID %s never dispatches a read or write", async backupId => {
+    let calls = 0;
+    const callback = captureReleaseTool({
+        get: async () => { calls++; throw new Error("must not run"); },
+        postReleaseMutation: async () => { calls++; throw new Error("must not run"); },
+    });
+    for (const action of ["logical_backup_status", "logical_backup_create"]) {
+        await expect(callback({ action, backup_id: backupId })).rejects.toThrow("backup_id");
+    }
+    expect(calls).toBe(0);
+});
+
+test("exact backup status remains a scoped production read while creation is protected", () => {
+    const context: ResolvedContext = {
+        host: "example.test", sshUser: "", sshPort: 22, sshKey: "", sshPass: "",
+        apiUrl: "https://example.test", apiToken: "", projectRef: PROJECT_REF,
+        readOnly: true, environment: "production", production: true,
+        inferredSupabaseUrl: "", inferredServiceRoleKey: "", credentialScope: "management",
+        source: "process_env", sourcePath: null, insecureTls: false,
+    };
+    expect(executionMode("release", "logical_backup_status", {})).toBe("read");
+    expect(() => authorizeExecution("release", { action: "logical_backup_status", ref: PROJECT_REF }, { context }))
+        .not.toThrow();
+    expect(() => authorizeExecution("release", { action: "logical_backup_status", ref: "other" }, { context }))
+        .toThrow("cannot target a different project");
+    expect(() => authorizeExecution("release", { action: "logical_backup_create", ref: PROJECT_REF }, { context }))
+        .toThrow("read-only mode");
+    expect(() => authorizeExecution("release", { action: "logical_backup_create", ref: PROJECT_REF }, {
+        context: { ...context, readOnly: false },
+    })).toThrow("--confirm-production");
+});
+
+test("real CLI permits exact read-only production status and blocks writes and cross-project reads before HTTP", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "logical-backup-cli-policy-"));
+    const requests: Array<{ method: string; path: string }> = [];
+    const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch(request) {
+            requests.push({ method: request.method, path: new URL(request.url).pathname });
+            return Response.json({ backup: verifiedBackup() });
+        },
+    });
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([key, value]) =>
+        value !== undefined && !/^(SUPACLOUD_|SUPABASE_|MANAGEMENT_|X_PROJECT_REF$)/.test(key)));
+    const cli = fileURLToPath(new URL("../../index.ts", import.meta.url));
+    const run = async (action: string, ref: string, readOnly = true) => {
+        const child = Bun.spawn([process.execPath, cli, "release", action, "--ref", ref, "--backup_id", BACKUP_ID], {
+            cwd: workspace,
+            env: {
+                ...environment, SUPACLOUD_API_URL: `http://127.0.0.1:${server.port}`,
+                SUPACLOUD_API_TOKEN: "logical-backup-policy-test-token", SUPACLOUD_PROJECT_REF: PROJECT_REF,
+                SUPACLOUD_ENV: "production", SUPACLOUD_READ_ONLY: String(readOnly),
+            },
+            stdout: "pipe", stderr: "pipe",
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+        ]);
+        return { exitCode, stdout, stderr };
+    };
+    try {
+        const observed = await run("logical_backup_status", PROJECT_REF);
+        expect(observed.exitCode).toBe(0);
+        expect(observed.stdout).toContain("release.logical_backup.status");
+        expect(observed.stdout).not.toContain("private_database_name");
+        expect(observed.stdout).not.toContain("logical-backup-policy-test-token");
+        expect(requests).toEqual([{
+            method: "GET", path: `/v1/projects/proj/database/backups/logical/${BACKUP_ID}`,
+        }]);
+        expect((await run("logical_backup_create", PROJECT_REF)).stderr).toContain("read-only mode");
+        expect((await run("logical_backup_status", "other")).stderr).toContain("cannot target a different project");
+        expect((await run("logical_backup_create", PROJECT_REF, false)).stderr).toContain("--confirm-production");
+        expect(requests).toHaveLength(1);
+    } finally {
+        server.stop(true);
+        rmSync(workspace, { recursive: true, force: true });
+    }
+}, 15_000);
 
 test("logical backup restore binds the exact inventory identity before and after one mutation", async () => {
     const confirmation = `RESTORE_PROJECT:${PROJECT_REF}:${BACKUP_ID}:${SHA256}`;

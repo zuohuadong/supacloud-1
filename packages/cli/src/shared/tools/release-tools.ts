@@ -11,6 +11,7 @@ import { PROJECT_ENDPOINT_RESPONSE_MAX_BYTES, projectApiOrigins } from "./projec
 
 type ReleaseOperation =
     | "release.logical_backup.list"
+    | "release.logical_backup.status"
     | "release.logical_backup.create"
     | "release.logical_backup.restore"
     | "release.postgrest.status"
@@ -82,7 +83,9 @@ function validProjectRef(ref: string): boolean {
 }
 
 function backupBelongsToProject(backupId: string, projectRef: string): boolean {
-    return BACKUP_ID.test(backupId) && backupId.startsWith(`logical-full_${projectRef}_`);
+    const prefix = `logical-full_${projectRef}_`;
+    return BACKUP_ID.test(backupId) && backupId.startsWith(prefix)
+        && /^[a-f0-9]{32}$/.test(backupId.slice(prefix.length));
 }
 
 function verifiedBackup(value: unknown, projectRef: string): VerifiedLogicalBackup | null {
@@ -146,18 +149,11 @@ function equalBackup(left: VerifiedLogicalBackup, right: VerifiedLogicalBackup):
         && left.sha256 === right.sha256;
 }
 
-function newlyCreatedBackup(
-    before: readonly VerifiedLogicalBackup[],
-    after: readonly VerifiedLogicalBackup[],
-): VerifiedLogicalBackup | null {
-    const afterById = new Map(after.map((backup) => [backup.backup_id, backup]));
-    for (const previous of before) {
-        const current = afterById.get(previous.backup_id);
-        if (!current || !equalBackup(previous, current)) return null;
+function requiredBackupId(value: unknown, projectRef: string): string {
+    if (typeof value !== "string" || !backupBelongsToProject(value, projectRef)) {
+        throw new Error("'backup_id' must identify a logical-full backup for 'ref'");
     }
-    const known = new Set(before.map((backup) => backup.backup_id));
-    const additions = after.filter((backup) => !known.has(backup.backup_id));
-    return additions.length === 1 ? additions[0]! : null;
+    return value;
 }
 
 function restoreRequest(
@@ -191,11 +187,27 @@ function httpFailure(operation: ReleaseOperation, response: HttpResult<unknown>)
     return releaseControlFailure(operation, "HTTP_ERROR", response.transportError ? null : response.status);
 }
 
-function mutationFailure(operation: ReleaseOperation, response: HttpResult<unknown>): ReleaseControlToolResponse {
+function mutationFailure(
+    operation: ReleaseOperation, response: HttpResult<unknown>, safeState: Record<string, unknown> = {},
+): ReleaseControlToolResponse {
     if (response.responseReadError || response.transportError || response.status === 408 || response.status >= 500) {
-        return releaseControlFailure(operation, "OUTCOME_UNKNOWN", response.transportError ? null : response.status);
+        return releaseControlFailure(operation, "OUTCOME_UNKNOWN", response.transportError ? null : response.status, safeState);
     }
-    return releaseControlFailure(operation, "HTTP_ERROR", response.status);
+    return releaseControlFailure(operation, "HTTP_ERROR", response.status, safeState);
+}
+
+async function readBackup(http: HttpTransport, projectRef: string, backupId: string) {
+    let response: HttpResult<unknown>;
+    try {
+        response = await http.get(`${endpoint(projectRef)}/database/backups/logical/${backupId}`, {
+            maxJsonBytes: MUTATION_MAX_BYTES, responseTimeoutMs: RELEASE_READ_RESPONSE_TIMEOUT_MS,
+        });
+    } catch {
+        response = { ok: false, status: 0, data: null, transportError: true };
+    }
+    const candidate = response.ok && response.status === 200 && isRecord(response.data)
+        ? verifiedBackup(response.data.backup, projectRef) : null;
+    return { response, backup: candidate?.backup_id === backupId ? candidate : null };
 }
 
 async function readInventory(
@@ -703,7 +715,7 @@ export function registerReleaseTools(
 ): void {
     const localActions = ["scope_inspect", "scope_rebind", "scope_create"] as const;
     const remoteActions = [
-        "logical_backup_list", "logical_backup_create", "logical_backup_restore",
+        "logical_backup_list", "logical_backup_status", "logical_backup_create", "logical_backup_restore",
         "postgrest_status", "postgrest_restart",
         "release_canary_fixture_stage_replay", "release_canary_fixture_disable_replay",
     ] as const;
@@ -726,7 +738,7 @@ export function registerReleaseTools(
             web: optional(Type.Boolean(), "[scope_create] Whether web assets are included in release scope"),
             dry_run: optional(Type.Boolean(), "[scope_rebind] Perform calculation and validation without writing files"),
             cwd: optional(Type.String(), "[scope_inspect/scope_rebind/scope_create] Base directory for relative file and git resolution"),
-            backup_id: optional(Type.String(), "[logical_backup_restore] Exact verified logical-full backup ID from the selected project inventory"),
+            backup_id: optional(Type.String(), "[logical_backup_create/status/restore] Stable project-bound backup ID; create generates one when omitted"),
             expected_sha256: optional(Type.String(), "[logical_backup_restore] Exact lowercase SHA-256 from the selected project inventory"),
             restore_confirmation: optional(Type.String(), "[logical_backup_restore] Exact RESTORE_PROJECT:<ref>:<backup_id>:<sha256> confirmation"),
             subject: optional(Type.String(), "[release_canary_fixture_stage_replay/disable_replay] Exact central subject UUID"),
@@ -773,26 +785,55 @@ export function registerReleaseTools(
                 });
             }
             if (action === "logical_backup_create") {
-                const before = await readInventory(http, projectRef);
-                const beforeFailure = readInventoryFailure("release.logical_backup.create", before);
-                if (beforeFailure) return beforeFailure;
-                const mutation = await http.postReleaseMutation(`${endpoint(projectRef)}/database/backups/logical`, {}, {
-                    timeoutMs: BACKUP_TIMEOUT_MS,
-                });
-                const after = await readInventory(http, projectRef);
+                const backupId = requiredBackupId(
+                    backup_id ?? `logical-full_${projectRef}_${crypto.randomUUID().replaceAll("-", "")}`, projectRef,
+                );
+                const state = { project_ref: projectRef, backup_id: backupId };
+                let mutation: HttpResult<unknown>;
+                try {
+                    mutation = await http.postReleaseMutation(
+                        `${endpoint(projectRef)}/database/backups/logical`, { backup_id: backupId },
+                        { timeoutMs: BACKUP_TIMEOUT_MS },
+                    );
+                } catch {
+                    mutation = { ok: false, status: 0, data: null, transportError: true };
+                }
                 if (!mutation.ok || mutation.status !== 200) {
-                    return mutationFailure("release.logical_backup.create", mutation);
+                    const uncertain = mutation.responseReadError || mutation.transportError
+                        || mutation.status === 408 || mutation.status >= 500;
+                    if (uncertain) {
+                        const observed = await readBackup(http, projectRef, backupId);
+                        // 文件读回不证明创建请求的目录同步已完成，保留未确认状态。
+                        if (observed.backup) return releaseControlFailure("release.logical_backup.create",
+                            "OUTCOME_UNKNOWN", mutation.transportError ? null : mutation.status, {
+                                ...state, backup: publicBackup(observed.backup), backup_verified: true,
+                                creation_confirmed: false,
+                            });
+                    }
+                    return mutationFailure("release.logical_backup.create", mutation, state);
                 }
                 const responseBackup = isRecord(mutation.data) ? verifiedBackup(mutation.data.backup, projectRef) : null;
-                const afterFailure = readInventoryFailure("release.logical_backup.create", after);
-                const addedBackup = after.inventory && newlyCreatedBackup(before.inventory!, after.inventory);
-                if (!responseBackup || afterFailure || !addedBackup || !equalBackup(responseBackup, addedBackup)) {
-                    return releaseControlFailure("release.logical_backup.create", "OUTCOME_UNKNOWN", mutation.status);
+                const after = await readBackup(http, projectRef, backupId);
+                if (!responseBackup || responseBackup.backup_id !== backupId || !after.backup
+                    || !equalBackup(responseBackup, after.backup)) {
+                    return releaseControlFailure("release.logical_backup.create", "OUTCOME_UNKNOWN", mutation.status, state);
                 }
                 return releaseControlSuccess("release.logical_backup.create", {
-                    project_ref: projectRef,
-                    backup: publicBackup(addedBackup),
+                    ...state, backup: publicBackup(after.backup),
                 });
+            }
+            if (action === "logical_backup_status") {
+                const backupId = requiredBackupId(backup_id, projectRef);
+                const read = await readBackup(http, projectRef, backupId);
+                const state = { project_ref: projectRef, backup_id: backupId };
+                if (!read.response.ok || read.response.status !== 200) {
+                    const code = read.response.responseReadError ? "INVALID_RESPONSE" : "HTTP_ERROR";
+                    return releaseControlFailure("release.logical_backup.status", code,
+                        read.response.transportError ? null : read.response.status, state);
+                }
+                return read.backup
+                    ? releaseControlSuccess("release.logical_backup.status", { ...state, backup: publicBackup(read.backup) })
+                    : releaseControlFailure("release.logical_backup.status", "INVALID_RESPONSE", read.response.status, state);
             }
             if (action === "logical_backup_restore") {
                 const request = restoreRequest(projectRef, backup_id, expected_sha256, restore_confirmation);

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
-import { parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult } from "@supacloud/delivery";
+import { parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult, parseApplicationPromotionPlan } from "@supacloud/delivery";
 import {
     applyDiagnosticFix,
     buildDeliveryProject,
@@ -35,6 +35,7 @@ import { applyScaffoldWrites, planScaffoldWrites, scaffoldPath, ScaffoldError, t
 const REMOTE_APP_ACTIONS = {
     upload: "upload_release",
     "transfer-plan": "get_release_transfer_plan",
+    "promote-plan": "get_promotion_plan",
     transfer: "transfer_release",
     configure: "put_configuration",
     deploy: "activate_release",
@@ -57,8 +58,8 @@ export interface AppToolOptions {
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
     ref: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
     id: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/status/rollback/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/rollback] Required immutable configuration revision",
+    environment_id: "[configure/promote-plan/deploy/status/rollback/reconcile/retire] Target environment ID",
+    configuration_id: "[promote-plan/deploy/rollback] Immutable target configuration revision; required for activation",
     activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID",
     expected_activation_id: "[deploy/rollback] Required current activation ID, or absent for first activation",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
@@ -66,6 +67,7 @@ const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
     release_id: "[deploy/rollback/reconcile] Required immutable application release ID",
     source_ref: "[transfer-plan/transfer] Source project ref",
     source_release_id: "[transfer-plan/transfer] Source immutable release ID",
+    source_environment_id: "[promote-plan] Source environment ID",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -89,6 +91,7 @@ export interface AppToolArguments {
     release_id?: string;
     source_ref?: string;
     source_release_id?: string;
+    source_environment_id?: string;
     kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource";
     template?: "minimal" | "http" | "command" | "edge";
     name?: string;
@@ -1108,8 +1111,8 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
     if (request.database_url !== undefined && request.action !== "dev" && request.action !== "watch") {
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--database-url applies only to app dev --profile integration");
     }
-    if (request.json !== undefined && request.action !== "transfer-plan" && request.action !== "transfer") {
-        throw new Error("--json applies only to app transfer-plan or transfer");
+    if (request.json !== undefined && request.action !== "transfer-plan" && request.action !== "transfer" && request.action !== "promote-plan") {
+        throw new Error("--json applies only to app transfer-plan, transfer or promote-plan");
     }
     if (request.json && request.format === "text") throw new Error("--json and --format text cannot be combined");
     if (Object.hasOwn(REMOTE_APP_ACTIONS, request.action)) {
@@ -1123,6 +1126,18 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
         validateToolArguments(APPLICATION_TOOL_SCHEMA, args);
         // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
         const result = await delegate(args);
+        if (request.action === "promote-plan" && !result.isError && format !== "json" && !json) {
+            const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+            if (!payload || typeof payload !== "object" || !("plan" in payload)) return result;
+            const plan = parseApplicationPromotionPlan(payload.plan);
+            return textResult([
+                `${plan.project_ref}/${plan.application_id}/${plan.environment_id}: ${plan.action}`,
+                `Source: ${plan.source.project_ref}/${plan.source.environment_id}`,
+                ...(plan.blockers.length ? [`Blocked: ${plan.blockers.join(", ")}`] : []),
+                ...(plan.steps.length ? [`Next: ${plan.steps.join(" -> ")}`] : []),
+                "Execution: not performed",
+            ].join("\n"));
+        }
         return (request.action === "transfer-plan" || request.action === "transfer") && format !== "json" && !json
             ? formatReleaseTransfer(result) : result;
     }
@@ -1170,7 +1185,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; transfer reuses a verified release without build or activation"),
+                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "promote-plan", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; transfer reuses a verified release without build or activation"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),
@@ -1186,7 +1201,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             out_dir: optional(Type.String(), "[dev/compile/plan/build/export-tools] Output directory (default: configured outDir)"),
             strict: optional(Type.Boolean(), "[dev/compile/check] Promote warnings to errors"),
             format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/graph/export-tools] Output format (default: text)"),
-            json: optional(Type.Boolean(), "[transfer-plan/transfer] Preserve full machine-readable receipt"),
+            json: optional(Type.Boolean(), "[transfer-plan/transfer/promote-plan] Preserve full machine-readable result"),
             profile: optional(stringEnum(["fast", "integration"]), "[dev] Run dev or dev:integration; integration verifies an explicit loopback database"),
             once: optional(Type.Boolean(), "[dev] Validate and report once without watching"),
             watch: optional(Type.Boolean(), "[dev] Watch for changes (default: true; --once disables)"),

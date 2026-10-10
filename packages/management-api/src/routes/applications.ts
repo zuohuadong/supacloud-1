@@ -4,6 +4,7 @@ import {
   ApplicationActivationIdSchema, ApplicationActivationWriteSchema, ApplicationActivationResultSchema,
   ApplicationActivationRetirementResultSchema, DeploymentEvidenceSchema, parseDeploymentEvidence,
   ApplicationReleaseTransferPlanSchema, ApplicationReleaseTransferResultSchema,
+  ApplicationPromotionPlanSchema,
   type DeploymentEvidence,
 } from "@supacloud/delivery";
 import { sql } from "../db";
@@ -25,6 +26,9 @@ import { victoriaLogsService } from "../services/victorialogs.service";
 import { applicationRuntimePlan } from "../services/application-runtime";
 import { buildApplicationPreviewReceipt } from "../services/application-preview-contract";
 import { ApplicationPreviewService } from "../services/application-preview.service";
+import {
+  ApplicationPromotions, ApplicationPromotionError, createDefaultApplicationPromotions,
+} from "../services/application-promotion";
 
 function activationFailure(error: unknown, identity: {
   project_ref: string; application_id: string; environment_id: string; activation_id: string;
@@ -51,6 +55,7 @@ function activationFailure(error: unknown, identity: {
 }
 
 interface ApplicationRouteDependencies {
+  promotions?: Pick<ApplicationPromotions, "readPlan">;
   transfers?: Pick<ApplicationReleaseTransfers, "readPlan" | "transfer">;
   storage?: ApplicationReleaseStorage;
   authorize?: typeof requireProjectOrAdminAuth;
@@ -82,6 +87,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   const authorize = dependencies.authorize ?? requireProjectOrAdminAuth;
   const exists = dependencies.projectExists ?? projectExists;
   const transfers = dependencies.transfers ?? new ApplicationReleaseTransfers(storage);
+  const promotions = dependencies.promotions ?? createDefaultApplicationPromotions();
   const sourceAccess = async (request: Request, ref: string, id: string, releaseId: string) => {
     const url = new URL(request.url);
     url.pathname = `/v1/projects/${ref}/applications/${id}/releases/${releaseId}`;
@@ -118,6 +124,9 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   });
   const routes = new Elysia({ prefix: "/v1/projects/:ref/applications", name: "application-releases" })
     .error(({ error }) => {
+      if (error instanceof ApplicationPromotionError) {
+        return status(error.statusCode, { code: error.code, error: "Application promotion plan is unavailable" });
+      }
       if (error instanceof ApplicationReleaseTransferError) {
         return status(error.statusCode, { code: error.code, error: "Application release transfer is unavailable" });
       }
@@ -148,6 +157,30 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
     }, async ({ params: values }) => ({
       project_ref: values.ref, application_id: values.id, environment_id: values.environmentId,
       configuration: await configurations.read(scope(values)),
+    }))
+    .get("/:id/environments/:environmentId/promotion-plan", {
+      params: environmentParams,
+      response: { 200: ApplicationPromotionPlanSchema },
+      query: t.Object({
+        source_ref: t.String({ pattern: "^[a-z0-9-]{1,20}$" }),
+        source_environment_id: environmentParams.properties.environmentId,
+        source_release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+        configuration_id: t.Optional(ApplicationConfigurationIdSchema),
+      }, { additionalProperties: false }),
+      beforeHandle: async ({ params: values, query, request }) => {
+        await sourceAccess(request, query.source_ref, values.id, query.source_release_id);
+        const url = new URL(request.url);
+        url.pathname = `/v1/projects/${query.source_ref}/applications/${values.id}/environments/${query.source_environment_id}/runtime`;
+        url.search = "";
+        const denied = await authorize(new Request(url, { method: "GET", headers: request.headers }), query.source_ref);
+        if (denied) throw new ApplicationPromotionError("APPLICATION_PROMOTION_SOURCE_DENIED", denied.status);
+      },
+      detail: { tags: ["applications"], summary: "Plan an immutable environment promotion without executing changes" },
+    }, ({ params: values, query }) => promotions.readPlan({
+      projectRef: values.ref, applicationId: values.id, environmentId: values.environmentId,
+      sourceProjectRef: query.source_ref, sourceEnvironmentId: query.source_environment_id,
+      sourceReleaseId: query.source_release_id,
+      ...(query.configuration_id === undefined ? {} : { configurationId: query.configuration_id }),
     }))
     .get("/:id/environments/:environmentId/configurations/:configurationId", {
       params: t.Object({ ...environmentParams.properties, configurationId: ApplicationConfigurationIdSchema }),

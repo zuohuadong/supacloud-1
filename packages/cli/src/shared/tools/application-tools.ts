@@ -10,7 +10,7 @@ import {
 import {
   ApplicationIdSchema, ApplicationReleaseIdSchema, ApplicationReleaseRecordSchema,
   ApplicationConfigurationIdSchema, ApplicationActivationIdSchema, ApplicationActivationWriteSchema,
-  ApplicationActivationResultSchema, ApplicationActivationRetirementResultSchema,
+  ApplicationActivationResultSchema, ApplicationActivationRetirementResultSchema, ApplicationRollbackSnapshotSchema,
 } from "./application-schemas";
 import { canonical, digest } from "@supacloud/delivery/files";
 import { optional, stringEnum, withDescription, type ToolSchema } from "../schema";
@@ -25,19 +25,19 @@ export const APPLICATION_TOOL_SCHEMA = {
   action: withDescription(stringEnum([
     "list_releases", "get_release", "upload_release", "get_runtime", "get_deployment_evidence",
     "get_configuration", "put_configuration",
-    "activate_release", "reconcile_activation", "retire_activation",
+    "activate_release", "rollback_release", "get_rollback_snapshot", "reconcile_activation", "retire_activation",
     "logs",
   ]), "Action"),
   ref: withDescription(Type.String(), "Project ref"),
   id: withDescription(ApplicationIdSchema, "Application ID"),
-  environment_id: optional(withDescription(ApplicationIdSchema, "[get_runtime/get_configuration/put_configuration] Environment ID")),
-  configuration_id: optional(ApplicationConfigurationIdSchema, "[get_configuration/activate_release] Immutable revision; required for activation"),
-  activation_id: optional(ApplicationActivationIdSchema, "[activate_release/reconcile_activation/retire_activation] Explicit stable activation ID"),
+  environment_id: optional(withDescription(ApplicationIdSchema, "[get_runtime/get_configuration/put_configuration/get_rollback_snapshot/rollback_release] Environment ID")),
+  configuration_id: optional(ApplicationConfigurationIdSchema, "[get_configuration/activate_release/rollback_release] Immutable revision; required for explicit activation"),
+  activation_id: optional(ApplicationActivationIdSchema, "[activate_release/reconcile_activation/retire_activation/rollback_release] Explicit stable activation ID; generated for rollback if omitted"),
   expected_activation_id: optional(Type.Union([ApplicationActivationIdSchema, Type.Null(), Type.Literal("absent")]),
-    "[activate_release] Current activation ID, or absent for first activation"),
+    "[activate_release/rollback_release] Current activation ID, or absent for first activation; selected by platform for default rollback"),
   configuration_path: optional(Type.String(), "[put_configuration] Local configuration write JSON including revision and expected revision"),
   manifest_path: optional(Type.String(), "[upload_release] Local delivery.manifest.json"),
-  release_id: optional(ApplicationReleaseIdSchema, "[get_release/activate_release/reconcile_activation] Immutable application release ID"),
+  release_id: optional(ApplicationReleaseIdSchema, "[get_release/activate_release/reconcile_activation/rollback_release] Immutable application release ID; platform selects previous for default rollback"),
   cursor: optional(ApplicationReleaseIdSchema, "[list_releases] Last release ID"),
   limit: optional(Type.Integer({ minimum: 1, maximum: 100 }), "[list_releases] Page size, default 50"),
   offset: optional(Type.Integer({ minimum: 0, maximum: 1_000_000 }), "[logs] Result offset"),
@@ -111,7 +111,8 @@ async function configurationAction(http: HttpTransport, args: Record<string, unk
   }
 }
 
-async function activationAction(http: HttpTransport, args: Record<string, unknown>, project: string) {
+async function activationAction(http: HttpTransport, args: Record<string, unknown>, project: string,
+  rollback?: { configuration_id: unknown; expected_activation_id: unknown }) {
   const action = text(args, "action"), ref = text(args, "ref"), id = text(args, "id");
   const environmentId = text(args, "environment_id"), activationId = text(args, "activation_id");
   const releaseId = args["release_id"] === undefined ? undefined : text(args, "release_id");
@@ -123,12 +124,13 @@ async function activationAction(http: HttpTransport, args: Record<string, unknow
     || (action !== "retire_activation" && !Value.Check(ApplicationReleaseIdSchema, releaseId))) {
     throw new Error("Invalid application activation identity");
   }
-  const operation = `applications.${action}`;
+  const operation = rollback ? "applications.rollback_release" : `applications.${action}`;
   const path = `/v1/projects/${project}/applications/${encodeURIComponent(id)}/environments/${encodeURIComponent(environmentId)}/activations`;
   const identity = {
     project_ref: ref, application_id: id, environment_id: environmentId,
     activation_id: activationId, ...(releaseId ? { release_id: releaseId } : {}),
   };
+  const safeState = { ...identity, ...(rollback ?? {}) };
   let body: unknown = {};
   if (action === "activate_release") {
     body = {
@@ -142,7 +144,7 @@ async function activationAction(http: HttpTransport, args: Record<string, unknow
     : `${path}/${activationId}/${action === "retire_activation" ? "retire" : "reconcile"}`;
   const result = await http.post(endpoint, body,
     { timeoutMs: 120_000, maxJsonBytes: 65_536, responseTimeoutMs: 30_000 });
-  if (!result.ok) return releaseControlMutationFailure(operation, result, identity);
+  if (!result.ok) return releaseControlMutationFailure(operation, result, safeState);
   if (action === "retire_activation") {
     if (!Value.Check(ApplicationActivationRetirementResultSchema, result.data)
       || Object.entries(identity).some(([key, value]) => Reflect.get(result.data as object, key) !== value)) {
@@ -153,9 +155,60 @@ async function activationAction(http: HttpTransport, args: Record<string, unknow
   if (!Value.Check(ApplicationActivationResultSchema, result.data)
     || Object.entries(identity).some(([key, value]) => Reflect.get(result.data as object, key) !== value)
     || (action === "reconcile_activation" && !result.data.replayed)) {
-    return releaseControlFailure(operation, "OUTCOME_UNKNOWN", result.status, identity);
+    return releaseControlFailure(operation, "OUTCOME_UNKNOWN", result.status, safeState);
   }
-  return releaseControlSuccess(operation, result.data);
+  return releaseControlSuccess(operation, { ...result.data, ...(rollback ?? {}) });
+}
+
+async function rollbackAction(http: HttpTransport, args: Record<string, unknown>, project: string) {
+  const ref = text(args, "ref"), id = text(args, "id"), environmentId = text(args, "environment_id");
+  if (!Value.Check(ApplicationIdSchema, environmentId)) throw new Error("Invalid environment ID");
+  const operation = `applications.${text(args, "action")}`;
+  const identity = { project_ref: ref, application_id: id, environment_id: environmentId };
+  let activationId = args["activation_id"];
+  if (activationId !== undefined && !Value.Check(ApplicationActivationIdSchema, activationId)) {
+    throw new Error("Invalid application activation ID");
+  }
+  let releaseId = args["release_id"], configurationId = args["configuration_id"];
+  let expectedActivationId = args["expected_activation_id"];
+  if (releaseId === undefined || args["action"] === "get_rollback_snapshot") {
+    if (releaseId !== undefined || configurationId !== undefined || expectedActivationId !== undefined) {
+      throw new Error("Default rollback selection cannot mix explicit release/configuration/CAS flags");
+    }
+    const response = await http.get(
+      `/v1/projects/${project}/applications/${encodeURIComponent(id)}/environments/${encodeURIComponent(environmentId)}/rollback-snapshot`,
+      { maxJsonBytes: 65_536, responseTimeoutMs: 30_000 },
+    );
+    if (!response.ok) return releaseControlFailure(operation, "HTTP_ERROR",
+      response.transportError ? null : response.status, identity);
+    const snapshot = response.data;
+    if (!Value.Check(ApplicationRollbackSnapshotSchema, snapshot)
+      || snapshot.project_ref !== ref || snapshot.application_id !== id || snapshot.environment_id !== environmentId
+      || (snapshot.previous !== null && (snapshot.active === null
+        || snapshot.previous.activation_id === snapshot.active.activation_id))) {
+      return releaseControlFailure(operation, "INVALID_RESPONSE", response.status, identity);
+    }
+    if (args["action"] === "get_rollback_snapshot") return releaseControlSuccess(operation, { ...identity, snapshot });
+    if (!snapshot.active || !snapshot.previous) {
+      return releaseControlFailure(operation, "MUTATION_NOT_SUCCEEDED", response.status, {
+        ...identity, reason: "NO_PREVIOUS_ACTIVATION",
+      });
+    }
+    if (activationId === snapshot.active.activation_id || activationId === snapshot.previous.activation_id) {
+      throw new Error("Rollback requires a new activation ID");
+    }
+    releaseId = snapshot.previous.release_id;
+    configurationId = snapshot.previous.configuration_id;
+    expectedActivationId = snapshot.active.activation_id;
+  }
+  activationId ??= crypto.randomUUID();
+  return activationAction(http, {
+    ...args, action: "activate_release", activation_id: activationId,
+    release_id: releaseId, configuration_id: configurationId, expected_activation_id: expectedActivationId,
+  }, project, {
+    configuration_id: configurationId,
+    expected_activation_id: expectedActivationId === "absent" ? null : expectedActivationId,
+  });
 }
 
 export function registerApplicationTools(server: ToolServer, http: HttpTransport): void {
@@ -166,6 +219,9 @@ export function registerApplicationTools(server: ToolServer, http: HttpTransport
       if (!Value.Check(ApplicationIdSchema, id)) throw new Error("Invalid application ID");
       const path = `/v1/projects/${project}/applications/${encodeURIComponent(id)}/releases`;
       const operation = `applications.${action}`;
+      if (action === "rollback_release" || action === "get_rollback_snapshot") {
+        return rollbackAction(http, args, project);
+      }
       if (action === "activate_release" || action === "reconcile_activation" || action === "retire_activation") {
         return activationAction(http, args, project);
       }

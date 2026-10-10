@@ -36,7 +36,8 @@ const REMOTE_APP_ACTIONS = {
     configure: "put_configuration",
     deploy: "activate_release",
     status: "get_runtime",
-    rollback: "activate_release",
+    rollback: "rollback_release",
+    "rollback-plan": "get_rollback_snapshot",
     reconcile: "reconcile_activation",
     retire: "retire_activation",
     logs: "logs",
@@ -52,15 +53,15 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/deploy/status/rollback/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/status/rollback/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/rollback] Required immutable configuration revision",
-    activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID",
-    expected_activation_id: "[deploy/rollback] Required current activation ID, or absent for first activation",
+    ref: "[upload/configure/deploy/status/rollback/rollback-plan/reconcile/retire] Project ref (defaults to context)",
+    id: "[upload/configure/deploy/status/rollback/rollback-plan/reconcile/retire] Application ID",
+    environment_id: "[configure/deploy/status/rollback/rollback-plan/reconcile/retire] Environment ID",
+    configuration_id: "[deploy/rollback] Required for deploy/explicit rollback; platform selects for default rollback",
+    activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID; generated for rollback if omitted",
+    expected_activation_id: "[deploy/rollback] Required for deploy/explicit rollback; platform selects current CAS for default rollback",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
-    release_id: "[deploy/rollback/reconcile] Required immutable application release ID",
+    release_id: "[deploy/rollback/reconcile] Required for deploy/reconcile; defaults to journal-selected previous for rollback",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -1136,7 +1137,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; upload/configure only prepare, rollback activates an explicit old release without schema downgrade"),
+                "plan", "build", "upload", "configure", "deploy", "status", "rollback", "rollback-plan", "reconcile", "retire", "logs"]), "App action; upload/configure only prepare, rollback activates the journal-selected previous release without schema downgrade"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),

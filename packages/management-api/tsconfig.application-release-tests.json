@@ -8,6 +8,7 @@
   "include": [
     "src/types/*.d.ts",
     "src/services/application-release-storage.ts",
+    "src/services/application-release-transfer.ts",
     "src/services/application-runtime.ts",
     "src/services/application-runtime-files.ts",
     "src/services/application-activation.ts",
@@ -19,6 +20,7 @@
     "src/services/application-configuration.ts",
     "src/services/application-runtime-allocation.ts",
     "tests/unit/application-release-storage.test.ts",
+    "tests/unit/application-release-transfer.test.ts",
     "tests/unit/application-runtime.test.ts",
     "tests/unit/application-runtime-allocation.test.ts",
     "tests/unit/application-activation.test.ts",

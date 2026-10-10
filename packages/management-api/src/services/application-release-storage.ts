@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Value } from "typebox/value";
 import {
@@ -75,18 +75,25 @@ export class ApplicationReleaseStorage {
   }
 
   async importRelease(input: ImportApplicationRelease): Promise<ApplicationReleaseRecord> {
-    const directory = await this.releasesDirectory(input.projectRef, input.applicationId, true);
+    if (!/^[A-Za-z0-9_-]{1,20}$/.test(input.projectRef) || !Value.Check(identity, input.applicationId)) invalid();
     const archive = await readDeliveryExecutableArchive(input.manifestPath);
     const actualObjects = Object.fromEntries(archive.objects.map(({ object }) => [object.name, object.objectId]));
     if (stableStringify(input.expectedObjects) !== stableStringify(actualObjects)) {
       invalid("APPLICATION_RELEASE_OBJECT_MISMATCH", 409);
     }
+    return this.publishArchive(input.projectRef, input.applicationId, archive);
+  }
+
+  private async publishArchive(
+    projectRef: string, applicationId: string, archive: Awaited<ReturnType<typeof readDeliveryExecutableArchive>>,
+  ): Promise<ApplicationReleaseRecord> {
+    const directory = await this.releasesDirectory(projectRef, applicationId, true);
     const manifest = stableStringify(archive.manifest);
     const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
-    const id = releaseId(input.projectRef, input.applicationId, manifestSha256);
+    const id = releaseId(projectRef, applicationId, manifestSha256);
     const record: ApplicationReleaseRecord = {
       schema: "supacloud.application-release.v1",
-      project_ref: input.projectRef, application_id: input.applicationId, release_id: id,
+      project_ref: projectRef, application_id: applicationId, release_id: id,
       manifest_sha256: manifestSha256, created_at: new Date().toISOString(),
       targets: archive.objects.map(({ object }) => ({
         name: object.name, object_id: object.objectId,
@@ -125,7 +132,7 @@ export class ApplicationReleaseStorage {
       } catch (error) {
         if (!(error instanceof Error) || !("code" in error)
           || (error.code !== "ENOTEMPTY" && error.code !== "EEXIST")) throw error;
-        const existing = await this.readRelease(input.projectRef, input.applicationId, id);
+        const existing = await this.readRelease(projectRef, applicationId, id);
         await syncDirectory(directory);
         return existing;
       }
@@ -192,41 +199,20 @@ export class ApplicationReleaseStorage {
     applicationId: string,
     sourceReleaseId: string,
     targetProjectRef: string,
+    expectedManifestSha256?: string,
   ): Promise<ApplicationReleaseRecord> {
     const source = await this.readArchive(sourceProjectRef, applicationId, sourceReleaseId);
-    const targetDirectory = await this.releasesDirectory(targetProjectRef, applicationId, true);
+    if (expectedManifestSha256 !== undefined && source.record.manifest_sha256 !== expectedManifestSha256) {
+      invalid("APPLICATION_RELEASE_TRANSFER_DIGEST_MISMATCH", 409);
+    }
     const targetReleaseId = releaseId(targetProjectRef, applicationId, source.record.manifest_sha256);
-    const targetRecord: ApplicationReleaseRecord = {
-      ...source.record,
-      project_ref: targetProjectRef,
-      release_id: targetReleaseId,
-      created_at: new Date().toISOString(),
-    };
     try {
-      return (await this.storedRecord(targetProjectRef, applicationId, targetReleaseId)).record;
+      return await this.readRelease(targetProjectRef, applicationId, targetReleaseId);
     } catch (error) {
       if (!(error instanceof ApplicationReleaseError) || error.code !== "APPLICATION_RELEASE_NOT_FOUND") throw error;
     }
-    const sourceStored = await this.storedRecord(sourceProjectRef, applicationId, sourceReleaseId);
-    const staging = await mkdtemp(join(targetDirectory, ".clone-"));
-    try {
-      const clone = join(staging, targetReleaseId);
-      await cp(sourceStored.directory, clone, { recursive: true, errorOnExist: true });
-      await rm(join(clone, "release.json"));
-      await writeDurable(join(clone, "release.json"), stableStringify(targetRecord));
-      await syncDirectory(clone);
-      await rename(clone, join(targetDirectory, targetReleaseId));
-      await syncDirectory(targetDirectory);
-      return targetRecord;
-    } catch (error) {
-      try {
-        return (await this.storedRecord(targetProjectRef, applicationId, targetReleaseId)).record;
-      } catch {
-        throw error;
-      }
-    } finally {
-      await rm(staging, { recursive: true, force: true });
-    }
+    // 发布已校验的字节快照，避免目录复制重新读取未经校验的源文件。
+    return this.publishArchive(targetProjectRef, applicationId, source.archive);
   }
 
   async readMigrations(projectRef: string, applicationId: string, id: string) {

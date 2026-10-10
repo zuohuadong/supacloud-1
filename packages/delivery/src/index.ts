@@ -19,6 +19,11 @@ export {
 } from "./application-release";
 export type { ApplicationReleaseRecord, ApplicationReleaseInventory } from "./application-release";
 export {
+  ApplicationReleaseTransferPlanSchema, ApplicationReleaseTransferResultSchema,
+  parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult,
+  type ApplicationReleaseTransferPlan, type ApplicationReleaseTransferResult,
+} from "./application-release-transfer";
+export {
   APPLICATION_RESERVED_ENVIRONMENT_NAMES, ApplicationConfigurationIdSchema, ApplicationConfigurationSchema,
   ApplicationConfigurationWriteSchema, ApplicationConfigurationViewSchema, assertApplicationConfigurationScope,
   parseApplicationConfigurationWrite, parseApplicationConfigurationView,

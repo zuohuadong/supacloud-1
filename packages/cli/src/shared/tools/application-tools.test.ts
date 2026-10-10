@@ -2,20 +2,41 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applicationReleaseId, type ApplicationReleaseRecord } from "@supacloud/delivery";
-import { validateExecutionPolicyCoverage } from "../execution-policy";
+import {
+  applicationReleaseId, parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult,
+  type ApplicationReleaseRecord, type ApplicationReleaseTransferPlan, type ApplicationReleaseTransferResult,
+} from "@supacloud/delivery";
+import { authorizeExecution, executionMode, validateExecutionPolicyCoverage } from "../execution-policy";
+import { resolveSupaCloudContext } from "../context";
 import type { HttpTransport } from "../transports/http";
+import { HttpTransport as RealHttpTransport } from "../transports/http";
 import { APPLICATION_TOOL_SCHEMA, registerApplicationTools } from "./application-tools";
 import { parseToolArguments } from "../schema";
 import type { ReleaseControlToolResponse } from "./release-control-response";
+import { runAppTool } from "./app-tools";
+import { fileURLToPath } from "node:url";
+import { createServer, type Socket } from "node:net";
+import type { ToolInvocation } from "../tool-server";
 
-function record(manifest = "a".repeat(64)): ApplicationReleaseRecord {
+function record(manifest = "a".repeat(64), projectRef = "project"): ApplicationReleaseRecord {
   return {
     schema: "supacloud.application-release.v1",
-    project_ref: "project", application_id: "reviews",
-    release_id: applicationReleaseId("project", "reviews", manifest),
+    project_ref: projectRef, application_id: "reviews",
+    release_id: applicationReleaseId(projectRef, "reviews", manifest),
     manifest_sha256: manifest, created_at: "2026-09-26T00:00:00.000Z",
     targets: [{ name: "api", object_id: "c".repeat(64), kind: "http", entrypoint: "bundle/index.js" }],
+  };
+}
+
+function transferPlan(source: ApplicationReleaseRecord, targetRef = "production"): ApplicationReleaseTransferPlan {
+  return {
+    schema: "supacloud.application-release-transfer-plan.v1",
+    project_ref: targetRef, application_id: source.application_id,
+    source: {
+      project_ref: source.project_ref, release_id: source.release_id, manifest_sha256: source.manifest_sha256,
+    },
+    candidate_release_id: applicationReleaseId(targetRef, source.application_id, source.manifest_sha256),
+    action: "materialize", execution_performed: false,
   };
 }
 
@@ -308,6 +329,332 @@ test("application reads reject mismatched receipt identities", async () => {
   });
   expect(JSON.parse(result.content[0]!.text)).toMatchObject({ ok: false, error: { code: "INVALID_RESPONSE" } });
 });
+
+test("release transfer plan is read-only and no-op skips the mutation", async () => {
+  const source = record(undefined, "staging");
+  let posts = 0;
+  const plan = { ...transferPlan(source), action: "no-op" as const };
+  const handler = tool(plan, {
+    postReleaseMutation: (async () => { posts++; throw new Error("Unexpected transfer POST"); }) as HttpTransport["postReleaseMutation"],
+  });
+  const output = JSON.parse((await handler({
+    action: "transfer_release", ref: "production", id: "reviews",
+    source_ref: "staging", source_release_id: source.release_id,
+  })).content[0]!.text);
+  expect(output).toMatchObject({
+    ok: true, operation: "applications.transfer_release", no_op: true,
+    release_id: plan.candidate_release_id,
+  });
+  expect(posts).toBe(0);
+});
+
+test("release transfer posts once with the planned digest and preserves unknown identity", async () => {
+  const source = record(undefined, "staging");
+  const plan = transferPlan(source);
+  const requests: Array<{ url: string; body: unknown; options: unknown }> = [];
+  const result = {
+    schema: "supacloud.application-release-transfer-result.v1",
+    project_ref: "production", application_id: "reviews", source: plan.source,
+    candidate_release_id: plan.candidate_release_id, release: {
+      ...source, project_ref: "production",
+      release_id: plan.candidate_release_id,
+    }, activation_performed: false,
+  };
+  const handler = tool(plan, {
+    postReleaseMutation: (async (url: string, body: unknown, options: unknown) => {
+      requests.push({ url, body, options });
+      return { ok: true, status: 200, data: result };
+    }) as HttpTransport["postReleaseMutation"],
+  });
+  const output = JSON.parse((await handler({
+    action: "transfer_release", ref: "production", id: "reviews",
+    source_ref: "staging", source_release_id: source.release_id,
+  })).content[0]!.text);
+  expect(output).toMatchObject({
+    ok: true, operation: "applications.transfer_release",
+    release_id: plan.candidate_release_id, transfer: { activation_performed: false },
+  });
+  expect(requests).toEqual([{
+    url: "/v1/projects/production/applications/reviews/release-transfers",
+    body: {
+      source_ref: "staging", source_release_id: source.release_id,
+      expected_manifest_sha256: source.manifest_sha256,
+    },
+    options: { timeoutMs: 120_000 },
+  }]);
+});
+
+test("release transfer does not retry an uncertain POST", async () => {
+  const source = record(undefined, "staging");
+  const plan = transferPlan(source);
+  let posts = 0;
+  const handler = tool(plan, {
+    postReleaseMutation: (async () => {
+      posts++;
+      return { ok: false, status: 500, transportError: true, data: null };
+    }) as HttpTransport["postReleaseMutation"],
+  });
+  const output = JSON.parse((await handler({
+    action: "transfer_release", ref: "production", id: "reviews",
+    source_ref: "staging", source_release_id: source.release_id,
+  })).content[0]!.text);
+  expect(output).toMatchObject({
+    ok: false, operation: "applications.transfer_release",
+    error: { code: "OUTCOME_UNKNOWN" }, release_id: plan.candidate_release_id,
+    manifest_sha256: source.manifest_sha256,
+  });
+  expect(posts).toBe(1);
+});
+
+const transferSource = record(undefined, "staging");
+const transferArgs = {
+  action: "transfer_release", ref: "production", id: "reviews",
+  source_ref: "staging", source_release_id: transferSource.release_id,
+};
+function transferReceipt(): ApplicationReleaseTransferResult {
+  const plan = transferPlan(transferSource);
+  return {
+    schema: "supacloud.application-release-transfer-result.v1",
+    project_ref: "production", application_id: "reviews", source: plan.source,
+    candidate_release_id: plan.candidate_release_id,
+    release: { ...transferSource, project_ref: "production", release_id: plan.candidate_release_id },
+    activation_performed: false,
+  };
+}
+
+test("shared transfer contracts reject digest substitution and unexpected fields", () => {
+  const plan = transferPlan(transferSource), receipt = transferReceipt();
+  for (const change of [
+    { candidate_release_id: "f".repeat(64) }, { application_id: "other" },
+    { source: { ...plan.source, manifest_sha256: "f".repeat(64) } },
+    { private: "private-marker" }, { execution_performed: true },
+  ]) expect(() => parseApplicationReleaseTransferPlan({ ...plan, ...change })).toThrow();
+  for (const change of [
+    { candidate_release_id: "f".repeat(64) },
+    { release: record() }, { activation_performed: true }, { private: "private-marker" },
+  ]) expect(() => parseApplicationReleaseTransferResult({ ...receipt, ...change })).toThrow();
+});
+
+test.each(["source_ref", "source_release_id"] as const)("transfer requires a valid %s before HTTP", async field => {
+  let requests = 0;
+  const handler = tool(null, { get: (async () => {
+    requests++; throw new Error("Unexpected request");
+  }) as HttpTransport["get"] });
+  for (const value of [undefined, "../invalid", ""]) {
+    await expect(handler({ ...transferArgs, [field]: value })).rejects.toThrow();
+  }
+  expect(requests).toBe(0);
+});
+
+test.each(["foreign", "digest", "private", "status"] as const)("transfer rejects %s plans without POST", async fault => {
+  const plan = transferPlan(transferSource);
+  const badPlan = fault === "foreign" ? { ...plan, project_ref: "other",
+    candidate_release_id: applicationReleaseId("other", "reviews", transferSource.manifest_sha256) }
+    : fault === "digest" ? { ...plan, candidate_release_id: "f".repeat(64) }
+    : fault === "private" ? { ...plan, private: "private-marker" } : plan;
+  let posts = 0;
+  const handler = tool(badPlan, {
+    get: (async () => ({ ok: true, status: fault === "status" ? 202 : 200, data: badPlan })) as HttpTransport["get"],
+    postReleaseMutation: (async () => { posts++; throw new Error("Unexpected mutation"); }) as HttpTransport["postReleaseMutation"],
+  });
+  const output = await handler(transferArgs);
+  expect(output.isError).toBe(true);
+  expect(JSON.parse(output.content[0]!.text)).toMatchObject({ error: { code: "INVALID_RESPONSE" } });
+  expect(output.content[0]!.text).not.toContain("private-marker");
+  expect(posts).toBe(0);
+});
+
+test("app transfer defaults to a concise result and JSON keeps the full receipt", async () => {
+  const args = { action: "transfer" as const, id: "reviews", source_ref: "staging", source_release_id: transferSource.release_id };
+  const delegate = tool(transferPlan(transferSource), {
+    postReleaseMutation: (async () => ({ ok: true, status: 200, data: transferReceipt() })) as HttpTransport["postReleaseMutation"],
+  });
+  const options = { getApplications: () => delegate, projectRef: "production" };
+  const text = (await runAppTool(args, options)).content[0]!.text;
+  expect(text).toContain("production/reviews: Artifact transferred");
+  expect(text).toContain("Activation: not performed");
+  expect(text).toContain(transferReceipt().candidate_release_id);
+  expect(text).not.toContain('"schema"');
+  const json = (await runAppTool({ ...args, format: "json" }, options)).content[0]!.text;
+  expect(JSON.parse(json)).toMatchObject({ ok: true, transfer: transferReceipt(), no_op: false });
+  expect(JSON.parse((await runAppTool({ ...args, json: true }, options)).content[0]!.text))
+    .toMatchObject({ ok: true, transfer: transferReceipt() });
+  await expect(runAppTool({ ...args, json: true, format: "text" }, options)).rejects.toThrow("cannot be combined");
+  const noOp = tool({ ...transferPlan(transferSource), action: "no-op" });
+  expect((await runAppTool(args, { ...options, getApplications: () => noOp })).content[0]!.text).toContain("No changes");
+});
+
+test("production transfer requires target confirmation and read-only profiles permit only planning", () => {
+  const context = resolveSupaCloudContext({
+    SUPACLOUD_API_URL: "https://management.example.test", SUPACLOUD_API_TOKEN: "synthetic-fixture",
+    SUPACLOUD_PROJECT_REF: "production", SUPACLOUD_ENV: "production",
+  });
+  expect(executionMode("app", "transfer-plan", {})).toBe("read");
+  expect(executionMode("applications", "transfer_release", {})).toBe("write");
+  expect(() => authorizeExecution("app", { ...transferArgs, action: "transfer" }, { context })).toThrow("confirm-production");
+  expect(() => authorizeExecution("app", { ...transferArgs, action: "transfer" }, {
+    context, confirmProduction: "production",
+  })).not.toThrow();
+  const readOnly = { ...context, readOnly: true };
+  expect(() => authorizeExecution("app", { ...transferArgs, action: "transfer-plan" }, { context: readOnly })).not.toThrow();
+  expect(() => authorizeExecution("app", { ...transferArgs, action: "transfer" }, {
+    context: readOnly, confirmProduction: "production",
+  })).toThrow("read-only");
+  expect(() => authorizeExecution("app", { ...transferArgs, action: "transfer-plan", ref: "foreign" }, { context })).toThrow("cannot target");
+});
+
+async function withTransferServer(
+  reply: () => Response,
+  work: (handler: ToolInvocation, requests: string[]) => Promise<void>,
+): Promise<void> {
+  const requests: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    async fetch(request) {
+      requests.push(request.method);
+      if (request.method === "GET") return Response.json(transferPlan(transferSource));
+      expect(new URL(request.url).pathname).toBe("/v1/projects/production/applications/reviews/release-transfers");
+      expect(await request.json()).toEqual({
+        source_ref: "staging", source_release_id: transferSource.release_id,
+        expected_manifest_sha256: transferSource.manifest_sha256,
+      });
+      return reply();
+    },
+  });
+  let handler: ToolInvocation | undefined;
+  registerApplicationTools({ tool(_name, _description, _schema, callback) { handler = callback; } },
+    new RealHttpTransport({ baseUrl: `http://127.0.0.1:${server.port}`, token: "synthetic-fixture" }));
+  if (!handler) throw new Error("Missing application tool");
+  try { await work(handler, requests); } finally { server.stop(true); }
+}
+
+test("real HTTP transport accepts one complete transfer without retry", async () => {
+  await withTransferServer(() => Response.json(transferReceipt()), async (handler, requests) => {
+    const output = await handler(transferArgs);
+    expect(JSON.parse(output.content[0]!.text)).toMatchObject({ ok: true, transfer: transferReceipt() });
+    expect(requests).toEqual(["GET", "POST"]);
+  });
+});
+
+test("valid JSON with a truncated HTTP Content-Length remains outcome unknown", async () => {
+  const requests: string[] = [];
+  const sockets = new Set<Socket>();
+  // Bun.serve 会修正 Content-Length；裸响应用于重现网关中断传输。
+  const server = createServer(socket => {
+    sockets.add(socket);
+    socket.once("data", bytes => {
+      const method = bytes.toString("ascii").startsWith("GET ") ? "GET" : "POST";
+      requests.push(method);
+      const body = JSON.stringify(method === "GET" ? transferPlan(transferSource) : transferReceipt());
+      const length = Buffer.byteLength(body) + (method === "POST" ? 10 : 0);
+      socket.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${length}\r\nConnection: close\r\n\r\n${body}`);
+    });
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing loopback address");
+  let handler: ToolInvocation | undefined;
+  registerApplicationTools({ tool(_name, _description, _schema, callback) { handler = callback; } },
+    new RealHttpTransport({ baseUrl: `http://127.0.0.1:${address.port}`, token: "synthetic-fixture" }));
+  try {
+    if (!handler) throw new Error("Missing application tool");
+    const result = await handler(transferArgs);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      ok: false, error: { code: "OUTCOME_UNKNOWN" }, release_id: transferReceipt().candidate_release_id,
+    });
+    expect(requests).toEqual(["GET", "POST"]);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
+test.each(["incomplete", "oversized", "accepted", "empty", "foreign", "private", "server-error"] as const)(
+  "real HTTP transfer reports unknown %s outcomes without reflecting data or retry", async fault => {
+    const replies = () => {
+      const receipt = transferReceipt();
+      if (fault === "incomplete") return new Response(JSON.stringify(receipt).slice(0, -1), {
+        headers: { "content-type": "application/json" },
+      });
+      if (fault === "oversized") return Response.json({ ...receipt, private: "private-marker".repeat(10_000) });
+      if (fault === "accepted") return Response.json(receipt, { status: 202 });
+      if (fault === "empty") return new Response(null, { status: 204 });
+      if (fault === "foreign") return Response.json({ ...receipt, release: record() });
+      if (fault === "private") return Response.json({ ...receipt, private: "private-marker" });
+      return Response.json({ error: "private-marker" }, { status: 503 });
+    };
+    await withTransferServer(replies, async (handler, requests) => {
+      const output = await handler(transferArgs);
+      expect(JSON.parse(output.content[0]!.text)).toMatchObject({
+        ok: false, error: { code: "OUTCOME_UNKNOWN" },
+        release_id: transferPlan(transferSource).candidate_release_id,
+        source_ref: "staging", source_release_id: transferSource.release_id,
+      });
+      expect(output.content[0]!.text).not.toContain("private-marker");
+      expect(requests).toEqual(["GET", "POST"]);
+    });
+  },
+);
+
+test("CLI subprocess plans in read-only production and enforces confirmation before any transfer", async () => {
+  const root = await mkdtemp(join(tmpdir(), "transfer-cli-"));
+  const requests: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request) {
+      requests.push(request.method);
+      return Response.json(request.method === "GET" ? transferPlan(transferSource) : transferReceipt());
+    },
+  });
+  const environment = Object.fromEntries(Object.entries(process.env).filter(
+    ([key, value]) => value !== undefined && !/^(SUPACLOUD_|SUPABASE_|X_PROJECT_REF$|MANAGEMENT_API_URL$)/.test(key),
+  ));
+  const entry = fileURLToPath(new URL("../../index.ts", import.meta.url));
+  const run = async (action: string, flags: string[] = []) => {
+    const child = Bun.spawn([process.execPath, entry, "--env", "prod", "app", action,
+      "--id", "reviews", "--source_ref", "staging", "--source_release_id", transferSource.release_id, ...flags], {
+      cwd: root, env: environment, stdout: "pipe", stderr: "pipe",
+    });
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+  const config = (readOnly: boolean) => [
+    "SUPACLOUD_ENV=production", "SUPACLOUD_PROJECT_REF=production",
+    `SUPACLOUD_API_URL=http://127.0.0.1:${server.port}`, "SUPACLOUD_API_TOKEN=synthetic-fixture",
+    `SUPACLOUD_READ_ONLY=${readOnly}`,
+  ].join("\n") + "\n";
+  try {
+    await Bun.write(join(root, ".env.supacloud.prod"), config(true));
+    const text = await run("transfer-plan");
+    expect(text.code).toBe(0);
+    expect(text.stdout).toContain("Transfer required");
+    for (const format of [["--json"], ["--format", "json"]]) {
+      const json = await run("transfer-plan", format);
+      expect(json.code).toBe(0);
+      expect(JSON.parse(json.stdout)).toMatchObject({ ok: true, plan: transferPlan(transferSource) });
+    }
+    const readOnly = await run("transfer", ["--confirm-production", "production"]);
+    expect(readOnly.code).toBe(1);
+    expect(readOnly.stderr).toContain("read-only");
+    const foreign = await run("transfer-plan", ["--ref", "foreign"]);
+    expect(foreign.code).toBe(1);
+    expect(requests).toEqual(["GET", "GET", "GET"]);
+    await Bun.write(join(root, ".env.supacloud.prod"), config(false));
+    const unconfirmed = await run("transfer");
+    expect(unconfirmed.code).toBe(1);
+    expect(unconfirmed.stderr).toContain("confirm-production");
+    const confirmed = await run("transfer", ["--confirm-production", "production"]);
+    expect(confirmed.code).toBe(0);
+    expect(confirmed.stdout).toContain("Artifact transferred");
+    expect(requests).toEqual(["GET", "GET", "GET", "GET", "POST"]);
+  } finally { server.stop(true); await rm(root, { recursive: true, force: true }); }
+}, 30_000);
 
 test("application inventory rejects duplicate, reversed and invalid cursor pages", async () => {
   const releases = [record(), record("b".repeat(64))].sort((a, b) => a.release_id.localeCompare(b.release_id));

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
+import { parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult } from "@supacloud/delivery";
 import {
     applyDiagnosticFix,
     buildDeliveryProject,
@@ -33,6 +34,8 @@ import { applyScaffoldWrites, planScaffoldWrites, scaffoldPath, ScaffoldError, t
 
 const REMOTE_APP_ACTIONS = {
     upload: "upload_release",
+    "transfer-plan": "get_release_transfer_plan",
+    transfer: "transfer_release",
     configure: "put_configuration",
     deploy: "activate_release",
     status: "get_runtime",
@@ -52,8 +55,8 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/deploy/status/rollback/reconcile/retire] Application ID",
+    ref: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
+    id: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/reconcile/retire] Application ID",
     environment_id: "[configure/deploy/status/rollback/reconcile/retire] Environment ID",
     configuration_id: "[deploy/rollback] Required immutable configuration revision",
     activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID",
@@ -61,6 +64,8 @@ const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
     release_id: "[deploy/rollback/reconcile] Required immutable application release ID",
+    source_ref: "[transfer-plan/transfer] Source project ref",
+    source_release_id: "[transfer-plan/transfer] Source immutable release ID",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -82,6 +87,8 @@ export interface AppToolArguments {
     configuration_path?: string;
     manifest_path?: string;
     release_id?: string;
+    source_ref?: string;
+    source_release_id?: string;
     kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource";
     template?: "minimal" | "http" | "command" | "edge";
     name?: string;
@@ -97,6 +104,7 @@ export interface AppToolArguments {
     out_dir?: string;
     strict?: boolean;
     format?: "text" | "json";
+    json?: boolean;
     target?: string;
     fix?: string;
     write?: boolean;
@@ -1063,6 +1071,25 @@ async function runDelivery(args: AppToolArguments): Promise<ToolResult> {
     return textResult(JSON.stringify(result, null, 2), !result.ok);
 }
 
+function formatReleaseTransfer(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("ok" in payload) || payload.ok !== true) return result;
+        const plan = "plan" in payload ? parseApplicationReleaseTransferPlan(payload.plan) : null;
+        const receipt = !plan && "transfer" in payload ? parseApplicationReleaseTransferResult(payload.transfer) : null;
+        const data = plan ?? receipt;
+        if (!data) return result;
+        return textResult([
+            `${data.project_ref}/${data.application_id}: ${plan ? plan.action === "no-op" ? "No changes" : "Transfer required" : "Artifact transferred"}`,
+            `Source: ${data.source.project_ref} / ${data.source.release_id}`,
+            `Target release: ${data.candidate_release_id}`,
+            `Manifest: ${data.source.manifest_sha256}`,
+            "Activation: not performed",
+        ].join("\n"));
+    } catch { return result; }
+}
+
 export async function runAppTool(request: AppToolArguments, options: AppToolOptions = {}): Promise<ToolResult> {
     if ((request.dry_run !== undefined && request["dry-run"] !== undefined)
         || (request.register_in !== undefined && request["register-in"] !== undefined)
@@ -1081,16 +1108,23 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
     if (request.database_url !== undefined && request.action !== "dev" && request.action !== "watch") {
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--database-url applies only to app dev --profile integration");
     }
+    if (request.json !== undefined && request.action !== "transfer-plan" && request.action !== "transfer") {
+        throw new Error("--json applies only to app transfer-plan or transfer");
+    }
+    if (request.json && request.format === "text") throw new Error("--json and --format text cannot be combined");
     if (Object.hasOwn(REMOTE_APP_ACTIONS, request.action)) {
         const delegate = options.getApplications?.();
         if (!delegate) return textResult("App remote actions require a Management API context.", true);
         const action = REMOTE_APP_ACTIONS[request.action as keyof typeof REMOTE_APP_ACTIONS];
+        const { format, json, ...remoteRequest } = request;
         const args = {
-            ...request, action, ref: request.ref ?? options.projectRef,
+            ...remoteRequest, action, ref: request.ref ?? options.projectRef,
         };
         validateToolArguments(APPLICATION_TOOL_SCHEMA, args);
         // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
-        return delegate(args);
+        const result = await delegate(args);
+        return (request.action === "transfer-plan" || request.action === "transfer") && format !== "json" && !json
+            ? formatReleaseTransfer(result) : result;
     }
     switch (request.action) {
         case "verify-plan": {
@@ -1136,7 +1170,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; upload/configure only prepare, rollback activates an explicit old release without schema downgrade"),
+                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; transfer reuses a verified release without build or activation"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),
@@ -1152,6 +1186,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             out_dir: optional(Type.String(), "[dev/compile/plan/build/export-tools] Output directory (default: configured outDir)"),
             strict: optional(Type.Boolean(), "[dev/compile/check] Promote warnings to errors"),
             format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/graph/export-tools] Output format (default: text)"),
+            json: optional(Type.Boolean(), "[transfer-plan/transfer] Preserve full machine-readable receipt"),
             profile: optional(stringEnum(["fast", "integration"]), "[dev] Run dev or dev:integration; integration verifies an explicit loopback database"),
             once: optional(Type.Boolean(), "[dev] Validate and report once without watching"),
             watch: optional(Type.Boolean(), "[dev] Watch for changes (default: true; --once disables)"),

@@ -5,7 +5,9 @@ import {
   type ApplicationReleaseRecord, type ApplicationConfigurationView, type DeploymentEvidence,
   type DeliveryMigrationArchive,
 } from "@supacloud/delivery";
-import { ApplicationPromotions } from "../../src/services/application-promotion";
+import {
+  ApplicationPromotions, ApplicationPromotionError, type ApplicationPromotionDependencies,
+} from "../../src/services/application-promotion";
 import type { ApplicationActiveRecord } from "../../src/services/application-activation";
 import { ApplicationMigrations } from "../../src/services/application-migrations";
 import type { ProjectMutationState } from "../../src/services/project-mutation.service";
@@ -64,7 +66,7 @@ function state(record: ApplicationActiveRecord): ProjectMutationState {
     completedAt: new Date(now).toISOString(), createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(),
   };
 }
-function fixture() {
+function fixture(assertIdle: NonNullable<ApplicationPromotionDependencies["assertIdle"]> = async () => {}) {
   const source = active("staging");
   let target: ApplicationActiveRecord | null = null;
   let configuration: ApplicationConfigurationView | null = {
@@ -94,7 +96,7 @@ function fixture() {
     return ref === "staging" ? sourceInventory() : [];
   } });
   const service = new ApplicationPromotions({
-    storage, migrations,
+    storage, migrations, assertIdle,
     transfers: { readPlan: async () => {
       reads++;
       return {
@@ -297,4 +299,56 @@ test("API requires separate source authorization before plan reads and redacts p
   const failure = await routes.handle(new Request(url));
   expect(failure.status).toBe(503);
   expect(await failure.text()).not.toContain("private-credential");
+});
+
+test("promotion checks both exact environment scopes before observation and around readback", async () => {
+  const checks: Array<{ projectRef: string; applicationId: string; environmentId: string }> = [];
+  const f = fixture(async scope => { checks.push(scope); });
+  expect((await f.service.readPlan(f.input)).action).toBe("promote");
+  expect(checks).toEqual(Array.from({ length: 3 }, () => [
+    { projectRef: "staging", applicationId: "reviews", environmentId: "staging" },
+    { projectRef: "production", applicationId: "reviews", environmentId: "production" },
+  ]).flat());
+});
+
+for (const noOp of [false, true]) {
+  test.each([1, 2, 3, 4, 5, 6])(`busy scope at check %s cannot return a ${noOp ? "no-op" : "promote"} plan`, async busyAt => {
+    let checks = 0;
+    const f = fixture(async () => {
+      if (++checks === busyAt) throw new ApplicationPromotionError("APPLICATION_PROMOTION_BUSY", 409);
+    });
+    if (noOp) { f.setArtifact(); f.setTarget(active("production")); }
+    await expect(f.service.readPlan(f.input)).rejects.toMatchObject({
+      code: "APPLICATION_PROMOTION_BUSY", statusCode: 409,
+    });
+    expect(checks).toBe(busyAt);
+    expect(f.reads()).toBe(busyAt <= 2 ? 0 : 1);
+  });
+}
+
+test("invalid scope does not query the journal and provider lookup failures are redacted", async () => {
+  let checks = 0;
+  const f = fixture(async () => { checks++; throw new Error("private-credential"); });
+  await expect(f.service.readPlan({ ...f.input, sourceProjectRef: "../foreign" })).rejects.toMatchObject({ statusCode: 400 });
+  expect(checks).toBe(0);
+  await expect(f.service.readPlan(f.input)).rejects.toMatchObject({
+    code: "APPLICATION_PROMOTION_UNVERIFIED", message: "APPLICATION_PROMOTION_UNVERIFIED", statusCode: 503,
+  });
+  expect(f.reads()).toBe(0);
+});
+
+test("promotion API returns a busy conflict without a success-shaped plan", async () => {
+  const f = fixture(async () => { throw new ApplicationPromotionError("APPLICATION_PROMOTION_BUSY", 409); });
+  const routes = createApplicationRoutes({
+    projectExists: async () => true, promotions: f.service, authorize: async () => undefined,
+  });
+  const response = await routes.handle(new Request(
+    `http://localhost/v1/projects/production/applications/reviews/environments/production/promotion-plan`
+      + `?source_ref=staging&source_environment_id=staging&source_release_id=${f.input.sourceReleaseId}`,
+  ));
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({
+    code: "APPLICATION_PROMOTION_BUSY", error: "Application promotion plan is unavailable",
+  });
+  expect(f.reads()).toBe(0);
 });

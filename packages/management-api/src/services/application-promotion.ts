@@ -19,6 +19,7 @@ import { ApplicationReadiness } from "./application-readiness";
 import { ApplicationReleaseStorage } from "./application-release-storage";
 import { ApplicationReleaseTransfers } from "./application-release-transfer";
 import { applicationRuntimePlan } from "./application-runtime";
+import { readActiveProjectMutationForResource } from "./project-mutation.service";
 import { stableSha256, stableStringify } from "../utils/stable-json";
 
 const SMOKE_MAX_AGE_MS = 30 * 60 * 1000;
@@ -43,14 +44,23 @@ export interface ApplicationPromotionDependencies {
   readiness: Pick<ApplicationReadiness, "inspect">;
   evidence: Pick<ApplicationDeploymentEvidenceStorage, "read">;
   mutations: Pick<ApplicationActivationMutations, "read">;
+  assertIdle?: (scope: { projectRef: string; applicationId: string; environmentId: string }) => Promise<void>;
   now?: () => number;
 }
 
 /** 只观察部署事实；计划不创建制品、备份或运行时，不复制配置值。 */
 export class ApplicationPromotions {
   private readonly now: () => number;
+  private readonly assertIdle: NonNullable<ApplicationPromotionDependencies["assertIdle"]>;
   constructor(private readonly dependencies: ApplicationPromotionDependencies) {
     this.now = dependencies.now ?? Date.now;
+    this.assertIdle = dependencies.assertIdle ?? (async scope => {
+      const mutation = await readActiveProjectMutationForResource(scope.projectRef, {
+        type: "application_release",
+        id: stableSha256({ applicationId: scope.applicationId, environmentId: scope.environmentId }),
+      });
+      if (mutation) throw new ApplicationPromotionError("APPLICATION_PROMOTION_BUSY", 409);
+    });
   }
 
   async readPlan(request: ApplicationPromotionInput): Promise<ApplicationPromotionPlan> {
@@ -66,6 +76,15 @@ export class ApplicationPromotions {
       if (error instanceof ApplicationPromotionError) throw error;
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_UNVERIFIED", 503);
     }
+  }
+
+  private async assertEnvironmentsIdle(input: ApplicationPromotionInput): Promise<void> {
+    await this.assertIdle({
+      projectRef: input.sourceProjectRef, applicationId: input.applicationId, environmentId: input.sourceEnvironmentId,
+    });
+    await this.assertIdle({
+      projectRef: input.projectRef, applicationId: input.applicationId, environmentId: input.environmentId,
+    });
   }
 
   private async readActive(projectRef: string, applicationId: string, environmentId: string) {
@@ -129,6 +148,9 @@ export class ApplicationPromotions {
   }
 
   private async observe(input: ApplicationPromotionInput): Promise<ApplicationPromotionPlan> {
+    // An unchanged old authority is not evidence of an idle environment: a
+    // new activation/deactivation may already be pending in the durable journal.
+    await this.assertEnvironmentsIdle(input);
     const transfer = parseApplicationReleaseTransferPlan(await this.dependencies.transfers.readPlan({
       projectRef: input.projectRef, applicationId: input.applicationId,
       sourceProjectRef: input.sourceProjectRef, sourceReleaseId: input.sourceReleaseId,
@@ -210,6 +232,7 @@ export class ApplicationPromotions {
     };
     content.action = applicationPromotionAction(content);
     content.steps = applicationPromotionSteps(content);
+    await this.assertEnvironmentsIdle(input);
     const sourceReadback = await this.dependencies.migrations.inspectArchives(
       input.sourceProjectRef, input.applicationId, release, archives,
     );
@@ -230,6 +253,7 @@ export class ApplicationPromotions {
       || stableStringify(targetObservation) !== stableStringify(await this.runtimeObservation(target))) {
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_OBSERVATION_CHANGED", 409);
     }
+    await this.assertEnvironmentsIdle(input);
     return parseApplicationPromotionPlan({ ...content, plan_sha256: applicationPromotionPlanDigest(content) });
   }
 }

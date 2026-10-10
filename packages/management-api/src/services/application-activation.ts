@@ -210,8 +210,11 @@ function recoveryFingerprint(desired: ApplicationActiveRecord): string {
 export function hasApplicationActivationSuccessReceipt(state: ProjectMutationState, desired: ApplicationActiveRecord): boolean {
   if (state.projectRef !== desired.runtime.release.project_ref || state.mutationId !== desired.runtime.activationId
     || state.operation !== "application.release.activate"
-    || state.resourceKey !== stableSha256({
-      applicationId: desired.runtime.release.application_id, environmentId: desired.runtime.environmentId,
+    || state.resourceKey !== projectMutationResourceKey({
+      type: "application_release",
+      id: stableSha256({
+        applicationId: desired.runtime.release.application_id, environmentId: desired.runtime.environmentId,
+      }),
     })) return false;
   if (state.status !== "succeeded" || state.responseStatus !== 200) return false;
   if (stableStringify(state.receipt) === stableStringify(result(desired.runtime, false))) return true;

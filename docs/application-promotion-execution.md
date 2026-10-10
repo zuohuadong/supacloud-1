@@ -68,6 +68,12 @@ Feature: Promote an application between environments
       authenticated smoke all match
     When the plan is read
     Then the action is no-op and promotion creates no mutation
+
+  Scenario: Verify activation receipts against the stored resource identity
+    Given the journal stores the canonical v1 application release resource key
+    When promotion, activation replay, or recovery verifies a successful receipt
+    Then it accepts only the exact project, operation, activation, application and environment
+    And rejects bare digests and resource keys for other resource types
 ```
 
 Database restore and application release rollback are separate commands. A

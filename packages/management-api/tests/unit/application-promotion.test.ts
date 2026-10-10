@@ -184,13 +184,20 @@ test("no-op requires active candidate, matching configuration, successful journa
   expect((await f.service.readPlan(f.input)).action).toBe("promote");
 });
 
-test.each(["status", "scope", "operation", "resource", "receipt"] as const)(
+test.each(["status", "scope", "operation", "resource", "bare-resource", "resource-type", "receipt"] as const)(
   "source journal %s mismatch blocks promotion", async fault => {
     const f = fixture();
     if (fault === "status") f.sourceState.status = "outcome_unknown";
     if (fault === "scope") f.sourceState.projectRef = "foreign";
     if (fault === "operation") f.sourceState.operation = "frontend.release.activate";
     if (fault === "resource") f.sourceState.resourceKey = "d".repeat(64);
+    if (fault === "bare-resource") f.sourceState.resourceKey = stableSha256({
+      applicationId: "reviews", environmentId: f.source.runtime.environmentId,
+    });
+    if (fault === "resource-type") f.sourceState.resourceKey = projectMutationResourceKey({
+      type: "frontend_release",
+      id: stableSha256({ applicationId: "reviews", environmentId: f.source.runtime.environmentId }),
+    });
     if (fault === "receipt") f.sourceState.receipt!["release_id"] = "d".repeat(64);
     const plan = await f.service.readPlan(f.input);
     expect(plan.action).toBe("blocked");

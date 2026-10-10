@@ -207,7 +207,12 @@ function recoveryFingerprint(desired: ApplicationActiveRecord): string {
   return stableSha256({ schema: "supacloud.application-activation-recovery.v1", desired });
 }
 
-function hasSuccessReceipt(state: ProjectMutationState, desired: ApplicationActiveRecord): boolean {
+export function hasApplicationActivationSuccessReceipt(state: ProjectMutationState, desired: ApplicationActiveRecord): boolean {
+  if (state.projectRef !== desired.runtime.release.project_ref || state.mutationId !== desired.runtime.activationId
+    || state.operation !== "application.release.activate"
+    || state.resourceKey !== stableSha256({
+      applicationId: desired.runtime.release.application_id, environmentId: desired.runtime.environmentId,
+    })) return false;
   if (state.status !== "succeeded" || state.responseStatus !== 200) return false;
   if (stableStringify(state.receipt) === stableStringify(result(desired.runtime, false))) return true;
   const reconciliation = state.receipt?.["reconciliation"];
@@ -279,7 +284,7 @@ export class ApplicationActivationService {
     });
     if (!begun.lease) {
       if (begun.state.status !== "succeeded") throw new Error("APPLICATION_ACTIVATION_OUTCOME_UNRESOLVED");
-      if (!hasSuccessReceipt(begun.state, desired)) {
+      if (!hasApplicationActivationSuccessReceipt(begun.state, desired)) {
         throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
       }
       await this.verifyDesired(desired);
@@ -400,7 +405,7 @@ export class ApplicationActivationService {
       state = current;
     }
     if (state.status === "succeeded") {
-      if (!hasSuccessReceipt(state, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
+      if (!hasApplicationActivationSuccessReceipt(state, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
     } else if (state.status !== "outcome_unknown") {
       throw new Error("APPLICATION_ACTIVATION_NOT_RECOVERABLE");
     }
@@ -410,7 +415,7 @@ export class ApplicationActivationService {
     if (checkpoint.previous) await this.ports.requireStopped(checkpoint.previous.runtime);
     if (state.status !== "succeeded") await this.mutations.recover(state, recoveryFingerprint(desired));
     const recovered = await this.mutations.read(input.projectRef, input.activationId);
-    if (!recovered || !hasSuccessReceipt(recovered, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
+    if (!recovered || !hasApplicationActivationSuccessReceipt(recovered, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
     await this.verifyDesired(desired);
     return result(desired.runtime, true);
   }

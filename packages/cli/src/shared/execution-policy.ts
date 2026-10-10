@@ -84,7 +84,7 @@ const ACTION_POLICY: Record<string, ModulePolicy> = {
     ai: { local: ["show_skill", "install_skill"] },
     app: {
         local: ["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix", "plan", "build"],
-        read: ["status", "logs", "transfer-plan", "promote-plan", "rollback-plan", "history", "deploy-plan", "diff", "preview-plan", "previews", "preview-status"],
+        read: ["status", "logs", "transfer-plan", "promote-plan", "rollback-plan", "history", "deploy-plan", "diff", "preview-plan", "previews", "preview-list", "preview-status"],
         write: ["upload", "configure", "transfer", "deploy", "rollback", "reconcile", "retire", "preview", "preview-reconcile", "preview-cleanup"],
     },
     db: {

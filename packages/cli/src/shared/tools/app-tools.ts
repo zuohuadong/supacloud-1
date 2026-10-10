@@ -55,6 +55,7 @@ const REMOTE_APP_ACTIONS = {
     "preview-plan": "get_preview_plan",
     preview: "create_preview",
     previews: "list_previews",
+    "preview-list": "list_previews",
     "preview-status": "get_preview",
     "preview-reconcile": "reconcile_preview",
     "preview-cleanup": "cleanup_preview",
@@ -82,7 +83,7 @@ const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
     source_ref: "[transfer-plan/transfer/promote-plan] Source project ref",
     source_release_id: "[transfer-plan/transfer/promote-plan] Source immutable release ID",
     source_environment_id: "[promote-plan] Source environment ID",
-    preview_id: "[preview-status/preview-reconcile/preview-cleanup] Preview receipt ID",
+    preview_id: "[preview/preview-plan/preview-status/preview-reconcile/preview-cleanup] Preview receipt ID",
     branch_ref: "[preview-plan] Proposed branch ref; preview assigns its own",
     branch_name: "[preview] Branch display name",
     data_mode: "[preview-plan/preview] Default schema_only; full_clone copies rows",
@@ -1186,6 +1187,33 @@ function formatRemoteDeployPlan(result: ToolResult): ToolResult {
     } catch { return result; }
 }
 
+function formatRemotePreview(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object") return result;
+        const value = payload as Record<string, unknown>;
+        if (value.ok !== true) return result;
+        const projectRef = typeof value.project_ref === "string" ? value.project_ref : "project";
+        const applicationId = typeof value.application_id === "string" ? value.application_id : "application";
+        const environmentId = typeof value.environment_id === "string" ? value.environment_id : "environment";
+        const scope = `${projectRef}/${applicationId}/${environmentId}`;
+        if (Array.isArray(value.previews)) {
+            const lines = value.previews.flatMap(item => {
+                if (!item || typeof item !== "object") return [];
+                const preview = item as Record<string, unknown>;
+                return typeof preview.preview_id === "string" && typeof preview.status === "string"
+                    ? [`${scope}: ${preview.preview_id} ${preview.status}`] : [];
+            });
+            return textResult(lines.join("\n"));
+        }
+        if (!value.preview || typeof value.preview !== "object") return result;
+        const preview = value.preview as Record<string, unknown>;
+        if (typeof preview.status !== "string") return result;
+        return textResult(`${scope}: ${preview.status}`);
+    } catch { return result; }
+}
+
 export async function runAppTool(request: AppToolArguments, options: AppToolOptions = {}): Promise<ToolResult> {
     if ((request.dry_run !== undefined && request["dry-run"] !== undefined)
         || (request.register_in !== undefined && request["register-in"] !== undefined)
@@ -1206,8 +1234,9 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
     }
     if (request.json !== undefined
         && request.action !== "history" && request.action !== "transfer-plan" && request.action !== "transfer"
-        && request.action !== "promote-plan") {
-        throw new Error("--json applies only to app history, transfer-plan, transfer or promote-plan");
+        && request.action !== "promote-plan"
+        && request.action !== "previews" && request.action !== "preview-list" && request.action !== "preview-status") {
+        throw new Error("--json applies only to app history, transfer-plan, transfer, promote-plan or preview inventory/status");
     }
     if (request.json !== undefined && request.format === "text") throw new Error("--json and --format text cannot be combined");
     if (Object.hasOwn(REMOTE_APP_ACTIONS, request.action)) {
@@ -1237,6 +1266,10 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
                 ...(plan.steps.length ? [`Next: ${plan.steps.join(" -> ")}`] : []),
                 "Execution: not performed",
             ].join("\n"));
+        }
+        if (["preview-plan", "previews", "preview-list", "preview-status", "preview-reconcile", "preview-cleanup"]
+            .includes(request.action) && format !== "json" && json !== true) {
+            return formatRemotePreview(result);
         }
         // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
         return (request.action === "transfer-plan" || request.action === "transfer") && format !== "json" && !json
@@ -1287,7 +1320,8 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
                 "plan", "build", "upload", "configure", "transfer-plan", "transfer", "promote-plan", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "history", "reconcile", "retire", "logs",
-                "preview-plan", "preview", "previews", "preview-status", "preview-reconcile", "preview-cleanup"]), "App action; transfer reuses a verified release without build or activation; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
+                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "promote-plan", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "history", "reconcile", "retire", "logs",
+                "preview-plan", "preview", "previews", "preview-list", "preview-status", "preview-reconcile", "preview-cleanup"]), "App action; transfer reuses a verified release without build or activation; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),

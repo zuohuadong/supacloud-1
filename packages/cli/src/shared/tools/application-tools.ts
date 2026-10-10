@@ -145,6 +145,9 @@ async function activationAction(http: HttpTransport, args: Record<string, unknow
   const result = await http.post(endpoint, body,
     { timeoutMs: 120_000, maxJsonBytes: 65_536, responseTimeoutMs: 30_000 });
   if (!result.ok) return releaseControlMutationFailure(operation, result, safeState);
+  // These synchronous mutation contracts only acknowledge completion with HTTP 200.
+  // An accepted/partial response is not a completed activation, even with valid JSON.
+  if (result.status !== 200) return releaseControlFailure(operation, "OUTCOME_UNKNOWN", result.status, safeState);
   if (action === "retire_activation") {
     if (!Value.Check(ApplicationActivationRetirementResultSchema, result.data)
       || Object.entries(identity).some(([key, value]) => Reflect.get(result.data as object, key) !== value)) {
@@ -182,7 +185,7 @@ async function rollbackAction(http: HttpTransport, args: Record<string, unknown>
     if (!response.ok) return releaseControlFailure(operation, "HTTP_ERROR",
       response.transportError ? null : response.status, identity);
     const snapshot = response.data;
-    if (!Value.Check(ApplicationRollbackSnapshotSchema, snapshot)
+    if (response.status !== 200 || !Value.Check(ApplicationRollbackSnapshotSchema, snapshot)
       || snapshot.project_ref !== ref || snapshot.application_id !== id || snapshot.environment_id !== environmentId
       || (snapshot.previous !== null && (snapshot.active === null
         || snapshot.previous.activation_id === snapshot.active.activation_id))) {

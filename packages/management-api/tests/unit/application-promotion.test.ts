@@ -8,6 +8,7 @@ import {
 import {
   ApplicationPromotions, ApplicationPromotionError, type ApplicationPromotionDependencies,
 } from "../../src/services/application-promotion";
+import type { ApplicationPromotionOwner } from "../../src/services/application-promotion-ownership";
 import type { ApplicationActiveRecord } from "../../src/services/application-activation";
 import { ApplicationMigrations } from "../../src/services/application-migrations";
 import { projectMutationResourceKey, type ProjectMutationState } from "../../src/services/project-mutation.service";
@@ -81,7 +82,10 @@ function state(record: ApplicationActiveRecord): ProjectMutationState {
     completedAt: new Date(now).toISOString(), createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(),
   };
 }
-function fixture(assertIdle: NonNullable<ApplicationPromotionDependencies["assertIdle"]> = async () => {}) {
+function fixture(
+  assertIdle: NonNullable<ApplicationPromotionDependencies["assertIdle"]> = async () => {},
+  overrides: Partial<Pick<ApplicationPromotionDependencies, "assertOwned">> = {},
+) {
   const source = active("staging");
   let target: ApplicationActiveRecord | null = null;
   let configuration: ApplicationConfigurationView | null = {
@@ -140,6 +144,7 @@ function fixture(assertIdle: NonNullable<ApplicationPromotionDependencies["asser
     evidence: { read: async ref => structuredClone(ref === "staging" ? sourceEvidence : targetEvidence) },
     mutations: { read: async ref => structuredClone(ref === "staging" ? sourceState : targetState) },
     now: () => now,
+    ...overrides,
   });
   const input = {
     projectRef: "production", applicationId: "reviews", environmentId: "production",
@@ -331,6 +336,27 @@ test("promotion checks both exact environment scopes before observation and arou
     { projectRef: "staging", applicationId: "reviews", environmentId: "staging" },
     { projectRef: "production", applicationId: "reviews", environmentId: "production" },
   ]).flat());
+});
+
+test("owned plan revalidation bypasses only the exact target owner and still checks the source", async () => {
+  const checks: string[] = [];
+  const owned: string[] = [];
+  const f = fixture(async scope => { checks.push(`idle:${scope.projectRef}:${scope.environmentId}`); }, {
+    assertOwned: async (scope, candidate) => {
+      owned.push(`${scope.projectRef}:${scope.environmentId}:${candidate.lease.mutationId}`);
+    },
+  });
+  const owner: ApplicationPromotionOwner = {
+    lease: {
+      projectRef: "production", mutationId: activation, leaseToken: activation, fencingEpoch: 3,
+    },
+    principal: { type: "admin", id: "admin:release" },
+    requestFingerprint: "d".repeat(64),
+  };
+  const plan = await f.service.readOwnedPlan(f.input, owner);
+  expect(plan.action).toBe("promote");
+  expect(owned).toEqual(Array(3).fill("production:production:01234567-89ab-4def-8123-456789abcdef"));
+  expect(checks).toEqual(Array(3).fill("idle:staging:staging"));
 });
 
 for (const noOp of [false, true]) {

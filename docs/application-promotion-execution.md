@@ -33,6 +33,14 @@ only that exact owner. A separate resource key would not provide mutual exclusio
 against direct activation. This ownership contract must be implemented before
 registering promotion writes.
 
+The internal `readOwnedPlan` revalidation path may observe the target only while
+the caller holds the exact promotion resource lease. It verifies the database
+lease token, fencing epoch, project, operation, principal, request fingerprint,
+and canonical application/environment resource under the same transaction.
+The source must remain idle. Public `readPlan` has no owner bypass. This is not
+activation delegation and must not be called inside an outer `protect` callback
+that already holds the same mutation row lock.
+
 ## Acceptance criteria
 
 ```gherkin
@@ -74,6 +82,14 @@ Feature: Promote an application between environments
     When promotion, activation replay, or recovery verifies a successful receipt
     Then it accepts only the exact project, operation, activation, application and environment
     And rejects bare digests and resource keys for other resource types
+
+  Scenario: Revalidate a plan while its promotion owns the target
+    Given a running promotion holds the exact target resource lease
+    When the internal executor revalidates its immutable plan
+    Then only that promotion is permitted as the target resource owner
+    And the source must still have no unresolved operation
+    And expired tokens, stale fencing epochs and changed request identities are rejected
+    And the public planning endpoint remains blocked by the promotion
 ```
 
 Database restore and application release rollback are separate commands. A

@@ -21,6 +21,10 @@ import { ApplicationReleaseTransfers } from "./application-release-transfer";
 import { applicationRuntimePlan } from "./application-runtime";
 import { readActiveProjectMutationForResource } from "./project-mutation.service";
 import { stableSha256, stableStringify } from "../utils/stable-json";
+import {
+  assertApplicationPromotionOwner, ApplicationPromotionOwnershipError,
+  type ApplicationPromotionOwner, type ApplicationPromotionScope,
+} from "./application-promotion-ownership";
 
 const SMOKE_MAX_AGE_MS = 30 * 60 * 1000;
 export interface ApplicationPromotionInput {
@@ -44,7 +48,8 @@ export interface ApplicationPromotionDependencies {
   readiness: Pick<ApplicationReadiness, "inspect">;
   evidence: Pick<ApplicationDeploymentEvidenceStorage, "read">;
   mutations: Pick<ApplicationActivationMutations, "read">;
-  assertIdle?: (scope: { projectRef: string; applicationId: string; environmentId: string }) => Promise<void>;
+  assertIdle?: (scope: ApplicationPromotionScope) => Promise<void>;
+  assertOwned?: (scope: ApplicationPromotionScope, owner: ApplicationPromotionOwner) => Promise<void>;
   now?: () => number;
 }
 
@@ -52,8 +57,10 @@ export interface ApplicationPromotionDependencies {
 export class ApplicationPromotions {
   private readonly now: () => number;
   private readonly assertIdle: NonNullable<ApplicationPromotionDependencies["assertIdle"]>;
+  private readonly assertOwned: NonNullable<ApplicationPromotionDependencies["assertOwned"]>;
   constructor(private readonly dependencies: ApplicationPromotionDependencies) {
     this.now = dependencies.now ?? Date.now;
+    this.assertOwned = dependencies.assertOwned ?? assertApplicationPromotionOwner;
     this.assertIdle = dependencies.assertIdle ?? (async scope => {
       const mutation = await readActiveProjectMutationForResource(scope.projectRef, {
         type: "application_release",
@@ -64,6 +71,18 @@ export class ApplicationPromotions {
   }
 
   async readPlan(request: ApplicationPromotionInput): Promise<ApplicationPromotionPlan> {
+    return this.readValidatedPlan(request);
+  }
+
+  async readOwnedPlan(
+    request: ApplicationPromotionInput, owner: ApplicationPromotionOwner,
+  ): Promise<ApplicationPromotionPlan> {
+    return this.readValidatedPlan(request, structuredClone(owner));
+  }
+
+  private async readValidatedPlan(
+    request: ApplicationPromotionInput, owner?: ApplicationPromotionOwner,
+  ): Promise<ApplicationPromotionPlan> {
     const input = structuredClone(request);
     if (![input.projectRef, input.sourceProjectRef].every(ref => /^[a-z0-9-]{1,20}$/.test(ref))
       || ![input.applicationId, input.environmentId, input.sourceEnvironmentId].every(id => Value.Check(ApplicationIdSchema, id))
@@ -71,20 +90,25 @@ export class ApplicationPromotions {
       || input.configurationId !== undefined && !Value.Check(ApplicationConfigurationIdSchema, input.configurationId)) {
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_IDENTITY_INVALID", 400);
     }
-    try { return await this.observe(input); }
+    try { return await this.observe(input, owner); }
     catch (error) {
       if (error instanceof ApplicationPromotionError) throw error;
+      if (error instanceof ApplicationPromotionOwnershipError) {
+        throw new ApplicationPromotionError(error.message, 409);
+      }
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_UNVERIFIED", 503);
     }
   }
 
-  private async assertEnvironmentsIdle(input: ApplicationPromotionInput): Promise<void> {
+  private async assertEnvironmentsIdle(input: ApplicationPromotionInput, owner?: ApplicationPromotionOwner): Promise<void> {
     await this.assertIdle({
       projectRef: input.sourceProjectRef, applicationId: input.applicationId, environmentId: input.sourceEnvironmentId,
     });
-    await this.assertIdle({
+    const target = {
       projectRef: input.projectRef, applicationId: input.applicationId, environmentId: input.environmentId,
-    });
+    };
+    if (owner) await this.assertOwned(target, owner);
+    else await this.assertIdle(target);
   }
 
   private async readActive(projectRef: string, applicationId: string, environmentId: string) {
@@ -158,10 +182,10 @@ export class ApplicationPromotions {
     };
   }
 
-  private async observe(input: ApplicationPromotionInput): Promise<ApplicationPromotionPlan> {
+  private async observe(input: ApplicationPromotionInput, owner?: ApplicationPromotionOwner): Promise<ApplicationPromotionPlan> {
     // An unchanged old authority is not evidence of an idle environment: a
     // new activation/deactivation may already be pending in the durable journal.
-    await this.assertEnvironmentsIdle(input);
+    await this.assertEnvironmentsIdle(input, owner);
     const transfer = parseApplicationReleaseTransferPlan(await this.dependencies.transfers.readPlan({
       projectRef: input.projectRef, applicationId: input.applicationId,
       sourceProjectRef: input.sourceProjectRef, sourceReleaseId: input.sourceReleaseId,
@@ -243,7 +267,7 @@ export class ApplicationPromotions {
     };
     content.action = applicationPromotionAction(content);
     content.steps = applicationPromotionSteps(content);
-    await this.assertEnvironmentsIdle(input);
+    await this.assertEnvironmentsIdle(input, owner);
     const sourceReadback = await this.dependencies.migrations.inspectArchives(
       input.sourceProjectRef, input.applicationId, release, archives,
     );
@@ -264,7 +288,7 @@ export class ApplicationPromotions {
       || stableStringify(targetObservation) !== stableStringify(await this.runtimeObservation(target))) {
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_OBSERVATION_CHANGED", 409);
     }
-    await this.assertEnvironmentsIdle(input);
+    await this.assertEnvironmentsIdle(input, owner);
     return parseApplicationPromotionPlan({ ...content, plan_sha256: applicationPromotionPlanDigest(content) });
   }
 }

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
+import { parseApplicationDeployPlan } from "@supacloud/delivery";
 import {
     applyDiagnosticFix,
     buildDeliveryProject,
@@ -34,7 +35,9 @@ import { applyScaffoldWrites, planScaffoldWrites, scaffoldPath, ScaffoldError, t
 const REMOTE_APP_ACTIONS = {
     upload: "upload_release",
     configure: "put_configuration",
-    deploy: "activate_release",
+    deploy: "deploy_release",
+    "deploy-plan": "get_deploy_plan",
+    diff: "get_deploy_plan",
     status: "get_runtime",
     rollback: "rollback_release",
     "rollback-plan": "get_rollback_snapshot",
@@ -53,15 +56,15 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/deploy/status/rollback/rollback-plan/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/deploy/status/rollback/rollback-plan/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/status/rollback/rollback-plan/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/rollback] Required for deploy/explicit rollback; platform selects for default rollback",
-    activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID; generated for rollback if omitted",
-    expected_activation_id: "[deploy/rollback] Required for deploy/explicit rollback; platform selects current CAS for default rollback",
+    ref: "[upload/configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire] Project ref (defaults to context)",
+    id: "[upload/configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire] Application ID",
+    environment_id: "[configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire] Environment ID",
+    configuration_id: "[deploy/deploy-plan/diff/rollback] Required for deployment; platform selects for default rollback",
+    activation_id: "[deploy/rollback/reconcile/retire] Stable activation ID; auto-generated for deploy/rollback if omitted",
+    expected_activation_id: "[deploy/rollback] Auto-selected from verified state; supply with activation_id for an exact retry",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
-    release_id: "[deploy/rollback/reconcile] Required for deploy/reconcile; defaults to journal-selected previous for rollback",
+    release_id: "[deploy/deploy-plan/diff/rollback/reconcile] Required for deployment; defaults to journal-selected previous for rollback",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -1064,6 +1067,30 @@ async function runDelivery(args: AppToolArguments): Promise<ToolResult> {
     return textResult(JSON.stringify(result, null, 2), !result.ok);
 }
 
+function formatRemoteDeployPlan(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("ok" in payload) || payload.ok !== true
+            || !("plan" in payload)) return result;
+        const plan = parseApplicationDeployPlan(payload.plan);
+        const names = (values: string[], prefix: string) => values.map(name => `${prefix}${name}`);
+        const targets = [
+            ...names(plan.changes.targets.added, "+"), ...names(plan.changes.targets.removed, "-"),
+            ...names(plan.changes.targets.changed, "~"),
+        ];
+        return textResult([
+            `${plan.project_ref}/${plan.application_id} [${plan.environment_id}]: ${plan.action === "no-op" ? "No changes" : "Activation required"}`,
+            `Release: ${plan.candidate.release_id} (${plan.changes.release ? "changed" : "unchanged"})`,
+            `Configuration: ${plan.candidate.configuration_id} (${plan.changes.configuration ? "changed" : "unchanged"})`,
+            `Targets: ${targets.length ? targets.join(", ") : "unchanged"}`,
+            `Migrations: ${!plan.migrations.ledger_compatible ? "ledger conflict" : plan.migrations.project_migrations_applied ? "applied" : "pending"}`,
+            `Provisioning: ${plan.migrations.operator_provisioning}`,
+            `Expected activation: ${plan.expected_activation_id ?? "absent"}`,
+        ].join("\n"));
+    } catch { return result; }
+}
+
 export async function runAppTool(request: AppToolArguments, options: AppToolOptions = {}): Promise<ToolResult> {
     if ((request.dry_run !== undefined && request["dry-run"] !== undefined)
         || (request.register_in !== undefined && request["register-in"] !== undefined)
@@ -1086,12 +1113,15 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
         const delegate = options.getApplications?.();
         if (!delegate) return textResult("App remote actions require a Management API context.", true);
         const action = REMOTE_APP_ACTIONS[request.action as keyof typeof REMOTE_APP_ACTIONS];
+        const { format, ...remoteRequest } = request;
         const args = {
-            ...request, action, ref: request.ref ?? options.projectRef,
+            ...remoteRequest, action, ref: request.ref ?? options.projectRef,
         };
         validateToolArguments(APPLICATION_TOOL_SCHEMA, args);
-        // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
-        return delegate(args);
+        // 保留激活收据和未知结果；只读计划可在文本模式下显示简洁差异。
+        const result = await delegate(args);
+        return (request.action === "deploy-plan" || request.action === "diff") && format !== "json"
+            ? formatRemoteDeployPlan(result) : result;
     }
     switch (request.action) {
         case "verify-plan": {
@@ -1137,7 +1167,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "deploy", "status", "rollback", "rollback-plan", "reconcile", "retire", "logs"]), "App action; upload/configure only prepare, rollback activates the journal-selected previous release without schema downgrade"),
+                "plan", "build", "upload", "configure", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "reconcile", "retire", "logs"]), "App action; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),
@@ -1152,7 +1182,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             include: optional(Type.String(), "[dev/compile/check] Comma-separated glob patterns for source files"),
             out_dir: optional(Type.String(), "[dev/compile/plan/build/export-tools] Output directory (default: configured outDir)"),
             strict: optional(Type.Boolean(), "[dev/compile/check] Promote warnings to errors"),
-            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/graph/export-tools] Output format (default: text)"),
+            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/deploy-plan/diff/graph/export-tools] Output format (default: text)"),
             profile: optional(stringEnum(["fast", "integration"]), "[dev] Run dev or dev:integration; integration verifies an explicit loopback database"),
             once: optional(Type.Boolean(), "[dev] Validate and report once without watching"),
             watch: optional(Type.Boolean(), "[dev] Watch for changes (default: true; --once disables)"),

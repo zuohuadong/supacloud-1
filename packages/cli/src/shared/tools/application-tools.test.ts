@@ -632,11 +632,11 @@ test("CLI subprocess plans in read-only production and enforces confirmation bef
   try {
     await Bun.write(join(root, ".env.supacloud.prod"), config(true));
     const text = await run("transfer-plan");
-    expect(text.code).toBe(0);
+    expect(text.code, text.stderr).toBe(0);
     expect(text.stdout).toContain("Transfer required");
     for (const format of [["--json"], ["--format", "json"]]) {
       const json = await run("transfer-plan", format);
-      expect(json.code).toBe(0);
+      expect(json.code, json.stderr).toBe(0);
       expect(JSON.parse(json.stdout)).toMatchObject({ ok: true, plan: transferPlan(transferSource) });
     }
     const readOnly = await run("transfer", ["--confirm-production", "production"]);
@@ -650,7 +650,7 @@ test("CLI subprocess plans in read-only production and enforces confirmation bef
     expect(unconfirmed.code).toBe(1);
     expect(unconfirmed.stderr).toContain("confirm-production");
     const confirmed = await run("transfer", ["--confirm-production", "production"]);
-    expect(confirmed.code).toBe(0);
+    expect(confirmed.code, confirmed.stderr).toBe(0);
     expect(confirmed.stdout).toContain("Artifact transferred");
     expect(requests).toEqual(["GET", "GET", "GET", "GET", "POST"]);
   } finally { server.stop(true); await rm(root, { recursive: true, force: true }); }

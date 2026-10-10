@@ -208,15 +208,15 @@ export async function applicationPreviewAction(http: HttpTransport, args: Record
   if (Object.entries(args).some(([key, value]) => value !== undefined && !fields.has(key))) {
     throw new Error("Invalid option for preview action");
   }
-  if (args.ttl_seconds !== undefined && !Value.Check(ttlSecondsSchema, args.ttl_seconds)) {
+  if (args["ttl_seconds"] !== undefined && !Value.Check(ttlSecondsSchema, args["ttl_seconds"])) {
     throw new Error("ttl_seconds must be an integer from 300 to 604800");
   }
-  if (args.wait !== undefined && typeof args.wait !== "boolean") throw new Error("wait must be boolean");
-  if (args.timeout_seconds !== undefined
-    && (args.wait !== true || !Value.Check(waitSecondsSchema, args.timeout_seconds))) {
+  if (args["wait"] !== undefined && typeof args["wait"] !== "boolean") throw new Error("wait must be boolean");
+  if (args["timeout_seconds"] !== undefined
+    && (args["wait"] !== true || !Value.Check(waitSecondsSchema, args["timeout_seconds"]))) {
     throw new Error("timeout_seconds requires wait and must be an integer from 1 to 3600");
   }
-  const timeoutSeconds = args.wait === true ? ((args.timeout_seconds as number | undefined) ?? 300) : undefined;
+  const timeoutSeconds = args["wait"] === true ? ((args["timeout_seconds"] as number | undefined) ?? 300) : undefined;
   const startedAt = action === "get_preview" && timeoutSeconds !== undefined ? performance.now() : undefined;
   const operation = `applications.${action}`;
   const identity = { project_ref: ref, application_id: id, environment_id: environment };
@@ -238,9 +238,9 @@ export async function applicationPreviewAction(http: HttpTransport, args: Record
     if (!Value.Check(ApplicationReleaseIdSchema, releaseId)) throw new Error("Invalid release ID");
     if (action === "get_preview_plan") {
       const query = new URLSearchParams({ release_id: releaseId, branch_ref: required(args, "branch_ref") });
-      if (typeof args.data_mode === "string") query.set("data_mode", args.data_mode);
-      if (typeof args.configuration_id === "string") query.set("configuration_id", args.configuration_id);
-      if (args.ttl_seconds !== undefined) query.set("ttl_seconds", String(args.ttl_seconds));
+      if (typeof args["data_mode"] === "string") query.set("data_mode", args["data_mode"]);
+      if (typeof args["configuration_id"] === "string") query.set("configuration_id", args["configuration_id"]);
+      if (args["ttl_seconds"] !== undefined) query.set("ttl_seconds", String(args["ttl_seconds"]));
       result = await http.get(`${path}/preview-plan?${query}`, options);
     } else {
       const configurationId = required(args, "configuration_id");
@@ -250,9 +250,9 @@ export async function applicationPreviewAction(http: HttpTransport, args: Record
         source.result.status, { ...identity, release_id: releaseId, configuration_id: configurationId });
       sourceHash = source.manifest;
       result = await http.post(`${path}/previews`, {
-        release_id: releaseId, configuration_id: configurationId, data_mode: args.data_mode ?? "schema_only",
-        ...(args.branch_name === undefined ? {} : { branch_name: args.branch_name }),
-        ...(args.ttl_seconds === undefined ? {} : { ttl_seconds: args.ttl_seconds }),
+        release_id: releaseId, configuration_id: configurationId, data_mode: args["data_mode"] ?? "schema_only",
+        ...(args["branch_name"] === undefined ? {} : { branch_name: args["branch_name"] }),
+        ...(args["ttl_seconds"] === undefined ? {} : { ttl_seconds: args["ttl_seconds"] }),
       }, options);
     }
   } else if (action === "list_previews") {
@@ -287,22 +287,24 @@ export async function applicationPreviewAction(http: HttpTransport, args: Record
       if (new Set(previews.map(value => value.preview_id)).size !== previews.length) throw new Error();
       return releaseControlSuccess(operation, { ...identity, previews });
     }
-    const preview = receipt(result.data, { ref, id, environment, previewId });
+    const preview = receipt(result.data, {
+      ref, id, environment, ...(previewId === undefined ? {} : { previewId }),
+    });
     if (action === "get_preview_plan") {
       if (preview.status !== "planned" || preview.release_id !== releaseId
-        || preview.resources.database_branch.branch_ref !== args.branch_ref
-        || preview.resources.database_branch.data_mode !== (args.data_mode ?? "schema_only")
-        || (args.ttl_seconds === undefined ? preview.expires_at !== null : preview.expires_at === null)) throw new Error();
+        || preview.resources.database_branch.branch_ref !== args["branch_ref"]
+        || preview.resources.database_branch.data_mode !== (args["data_mode"] ?? "schema_only")
+        || (args["ttl_seconds"] === undefined ? preview.expires_at !== null : preview.expires_at === null)) throw new Error();
     } else {
       if (preview.status === "planned"
         || preview.resources.database_branch.branch_ref !== `pv${preview.preview_id.replaceAll("-", "").slice(0, 18)}`) throw new Error();
       if (action === "create_preview" && (preview.release_id !== applicationReleaseId(
         preview.resources.database_branch.branch_ref, id, sourceHash!,
-      ) || preview.resources.database_branch.data_mode !== (args.data_mode ?? "schema_only")
-        || !Value.Check(receiptSchema, result.data) || result.data.source_configuration_id !== args.configuration_id
+      ) || preview.resources.database_branch.data_mode !== (args["data_mode"] ?? "schema_only")
+        || !Value.Check(receiptSchema, result.data) || result.data.source_configuration_id !== args["configuration_id"]
         || preview.expires_at === null || result.data.created_at === undefined
-        || (args.ttl_seconds !== undefined
-          && Date.parse(preview.expires_at) - Date.parse(result.data.created_at) !== (args.ttl_seconds as number) * 1000))) throw new Error();
+        || (args["ttl_seconds"] !== undefined
+          && Date.parse(preview.expires_at) - Date.parse(result.data.created_at) !== (args["ttl_seconds"] as number) * 1000))) throw new Error();
     }
     if (preview.status === "failed" || (action === "cleanup_preview" && preview.status !== "cleaned")) {
       return releaseControlFailure(operation, "MUTATION_NOT_SUCCEEDED", result.status, { ...identity, preview });

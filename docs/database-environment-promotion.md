@@ -57,6 +57,37 @@ supacloud-cli branch promote \
 
 ### CLI 回执与不确定结果
 
+CLI 提交前重新查询平台计划，校验项目、分支、审阅 checksum 和破坏性确认。
+计划已无待执行迁移时，返回 `unchanged=true`、`promoted=false` 和
+`mutation_sent=false`，不发送提升 POST。计划漂移、阻断或响应不可验证时也不发送 POST。
+这仅表示当前账本无需提升，不证明任何先前超时请求成功，也不证明应用已部署或通过线上验收。
+实际执行仍由平台锁和计划校验防止查询之后的并发漂移；CLI 校验成功收据中的迁移集合
+与提交前已审阅集合完全一致，不接受缺失或额外迁移的成功声明。
+
+```gherkin
+Scenario: 无变化的提升
+  Given 平台返回匹配审阅 checksum 的安全计划且没有待执行迁移
+  When 用户执行 branch promote
+  Then CLI 返回 unchanged 且不发送 POST
+  And 不把当前状态当成先前请求的成功收据
+
+Scenario: 提交前发现漂移或阻断
+  Given 平台计划已漂移、存在阻断或缺少破坏性确认
+  When 用户执行 branch promote
+  Then CLI 返回未发送 mutation 的错误且不执行迁移
+
+Scenario: 提交前的证据不可验证
+  Given 平台计划查询失败、响应损坏或项目分支身份不匹配
+  When 用户执行 branch promote
+  Then CLI 不发送 POST 且不报告提升结果不确定
+
+Scenario: 成功收据必须对应本次审阅集合
+  Given 提升 POST 已发送
+  When 收据遗漏、改变或新增本次计划之外的迁移
+  Then CLI 返回 OUTCOME_UNKNOWN 并保留原审阅 checksum
+  And 不自动重放 POST
+```
+
 CI 可使用 `--json` 获取 `supacloud.cli.release-control.v1` 回执：
 
 ```bash
@@ -68,9 +99,9 @@ CLI 校验父项目和分支归属、SHA-256 格式、迁移版本唯一性、�
 
 文本和 JSON 输出都不回显 SQL、远端错误原文或任意警告文本。阻断原因使用 CLI 内置说明；`reported_applied_versions` 只是服务端报告的部分应用线索，不代表 CLI 已独立验证提交结果。
 
-超时、5xx、响应体损坏/超限或不完整的 2xx 回执均返回 `OUTCOME_UNKNOWN`，并保留父项目、分支、审阅 checksum 和重新获取 `promotion_plan` 的参数。CLI 不自动重放 POST、不自动提升下一批迁移，也不自动反向执行 migration。收到明确 4xx 后仍须检查回执中的部分应用线索，不能假设之前的迁移全部回滚。
+提升 POST 超时、5xx、响应体损坏/超限或不完整的 2xx 回执均返回 `OUTCOME_UNKNOWN`，并保留父项目、分支、审阅 checksum 和重新获取 `promotion_plan` 的参数。提交前查询失败则返回 `mutation_sent=false`，不把尚未发送的提升操作标记为结果不确定。CLI 不自动重放 POST、不自动提升下一批迁移，也不自动反向执行 migration。收到明确 4xx 后仍须检查回执中的部分应用线索，不能假设之前的迁移全部回滚。
 
-此版本的计划/回执响应体上限为 512 KiB，响应体读取超时为 5 秒；promotion POST 请求头等待预算为 30 秒。超限是未确认结果，不是迁移失败证明。重新获取计划会调用现有平台计划接口，可能幂等准备账本元数据和迁移角色，不应把它描述成数据库层面的纯只读查询。
+此版本的计划/回执响应体上限为 512 KiB，响应体读取超时为 5 秒；promotion POST 请求头等待预算为 30 秒。提升 POST 收据超限是未确认结果，不是迁移失败证明。重新获取计划会调用现有平台计划接口，可能幂等准备账本元数据和迁移角色，不应把它描述成数据库层面的纯只读查询。
 
 验收场景：
 

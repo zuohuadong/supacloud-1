@@ -135,6 +135,12 @@ function uniqueVersions(entries: readonly PromotionPlanEntry[]): boolean {
     return new Set(versions).size === versions.length;
 }
 
+function samePromotionEntry(left: PromotionPlanEntry, right: PromotionPlanEntry): boolean {
+    return left.version === right.version && left.checksum === right.checksum
+        && left.name === right.name && left.statement_count === right.statement_count
+        && left.destructive === right.destructive;
+}
+
 function parsePromotionPlan(
     candidate: unknown,
     expectedScope: { parentRef: string; branchRef: string },
@@ -207,6 +213,7 @@ function parsePromotionPlan(
 function parsePromotionResult(
     candidate: unknown,
     expectedScope: { parentRef: string; branchRef: string },
+    reviewedPending: readonly PromotionPlanEntry[],
 ): PromotionResult | null {
     if (!isRecord(candidate)
         || candidate.promoted !== true
@@ -220,15 +227,18 @@ function parsePromotionResult(
     const applied = candidate.applied.map(parsePromotionEntry);
     if (applied.some((entry) => entry === null)) return null;
     const normalizedApplied = applied.filter((entry): entry is PromotionPlanEntry => entry !== null);
-    if (!uniqueVersions(normalizedApplied)) return null;
+    if (!uniqueVersions(normalizedApplied) || normalizedApplied.length !== reviewedPending.length) return null;
+    const reviewedByVersion = new Map(reviewedPending.map((entry) => [entry.version, entry]));
+    if (normalizedApplied.some((entry) => {
+        const reviewed = reviewedByVersion.get(entry.version);
+        return !reviewed || !samePromotionEntry(entry, reviewed);
+    })) return null;
     const plan = parsePromotionPlan(candidate.plan, expectedScope);
     if (!plan || !plan.safe_to_apply || plan.pending.length > 0) return null;
     const readbackByVersion = new Map(plan.applied.map((entry) => [entry.version, entry]));
     if (normalizedApplied.some((entry) => {
         const readback = readbackByVersion.get(entry.version);
-        return !readback || readback.checksum !== entry.checksum
-            || readback.name !== entry.name || readback.statement_count !== entry.statement_count
-            || readback.destructive !== entry.destructive;
+        return !readback || !samePromotionEntry(entry, readback);
     })) return null;
     return {
         promoted: true,
@@ -267,6 +277,8 @@ function promotionFailure(
         unknownOutcome ? "Promotion outcome is unknown; do not repeat the request automatically." : "Promotion request was not verified.",
         `Error: ${state.error.code}`,
         `Project: ${state.project_ref}; branch: ${state.branch_ref}`,
+        ...(typeof state.reason === "string" ? [`Reason: ${state.reason}`] : []),
+        ...(state.mutation_sent === false ? ["No promotion request was sent."] : []),
         ...(typeof state.plan_checksum === "string" ? [`Reviewed checksum: ${state.plan_checksum}`] : []),
         ...(Array.isArray(state.reported_applied_versions) && state.reported_applied_versions.length > 0
             ? [`Server-reported applied versions: ${state.reported_applied_versions.join(", ")}`]
@@ -415,6 +427,39 @@ export function registerBranchTools(
                     automatic_retry: false,
                     reconciliation: { action: "promotion_plan", ref, branch_ref: branchRef },
                 };
+                const preflight = await http.get(`${branchPath(ref, branchRef)}/promote/plan`, {
+                    maxJsonBytes: PROMOTION_PLAN_MAX_JSON_BYTES,
+                    responseTimeoutMs: 5_000,
+                });
+                const beforeMutation = { ...state, mutation_sent: false };
+                if (!preflight.ok) {
+                    return promotionFailure(releaseControlFailure("branch.promote", "HTTP_ERROR",
+                        preflight.transportError ? null : preflight.status,
+                        { ...beforeMutation, reason: "PREFLIGHT_FAILED" }), args.json === true, false);
+                }
+                const plan = parsePromotionPlan(preflight.data, { parentRef: ref, branchRef });
+                if (!plan) {
+                    return promotionFailure(releaseControlFailure("branch.promote", "INVALID_RESPONSE",
+                        preflight.status, { ...beforeMutation, reason: "PREFLIGHT_UNVERIFIED" }),
+                        args.json === true, false);
+                }
+                const preflightReason = plan.plan_checksum !== planChecksum ? "PLAN_CHANGED"
+                    : !plan.safe_to_apply ? "PLAN_BLOCKED"
+                    : plan.requires_destructive_confirmation && args.confirm_destructive !== true
+                        ? "DESTRUCTIVE_CONFIRMATION_REQUIRED" : null;
+                if (preflightReason) {
+                    return promotionFailure(releaseControlFailure("branch.promote", "MUTATION_NOT_SUCCEEDED",
+                        null, { ...beforeMutation, reason: preflightReason, observed_plan_checksum: plan.plan_checksum }),
+                        args.json === true, false);
+                }
+                if (plan.pending.length === 0) {
+                    return args.json
+                        ? releaseControlSuccess("branch.promote", {
+                            ...beforeMutation, promoted: false, unchanged: true, mode: "migrations",
+                            applied: [], plan, branch_data_copied: false, reviewed_plan_checksum: planChecksum,
+                        })
+                        : { content: [{ type: "text", text: "Migration promotion unchanged: no pending migrations; no promotion request sent." }] };
+                }
                 result = await http.post(`${branchPath(ref, branchRef)}/promote`, {
                     mode: "migrations",
                     plan_checksum: planChecksum,
@@ -427,18 +472,21 @@ export function registerBranchTools(
                 if (!result.ok) {
                     return promotionFailure(releaseControlMutationFailure("branch.promote", result, {
                         ...state,
+                        mutation_sent: true,
                         reported_applied_versions: appliedVersions(result),
                         ...(safePromotionCode(result) ? { server_code: safePromotionCode(result) } : {}),
                     }), args.json === true, result.transportError === true || result.responseReadError === true
                         || result.status === 408 || result.status >= 500);
                 }
-                const promoted = parsePromotionResult(result.data, { parentRef: ref, branchRef });
+                const promoted = parsePromotionResult(result.data, { parentRef: ref, branchRef }, plan.pending);
                 if (!promoted) {
                     return promotionFailure(releaseControlFailure("branch.promote", "OUTCOME_UNKNOWN",
-                        result.status, state), args.json === true, true);
+                        result.status, { ...state, mutation_sent: true }), args.json === true, true);
                 }
                 return args.json
-                    ? releaseControlSuccess("branch.promote", { ...promoted, reviewed_plan_checksum: planChecksum })
+                    ? releaseControlSuccess("branch.promote", {
+                        ...promoted, unchanged: false, mutation_sent: true, reviewed_plan_checksum: planChecksum,
+                    })
                     : { content: [{ type: "text", text: formatPromotionResult(promoted) }] };
             } else {
                 throw new Error(`Unknown branch action: ${action}`);

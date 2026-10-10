@@ -83,7 +83,10 @@ function register(
 }
 
 function captureBranchTool(handlers: MockHttp = {}, options?: { projectRef?: string; readOnly?: boolean }): ToolInvocation {
-    return register(mockHttp(handlers), options);
+    return register(mockHttp({
+        ...handlers,
+        ...(handlers.post && !handlers.get ? { get: async () => ok(promotionPlan()) } : {}),
+    }), options);
 }
 
 function text(result: Awaited<ReturnType<ToolInvocation>>): string {
@@ -180,6 +183,12 @@ describe("branch CLI promotion", () => {
     test("posts one scoped promotion with reviewed checksum and bounded response", async () => {
         const calls: Array<{ path: string; body: unknown }> = [];
         const callback = captureBranchTool({
+            get: async (path, options) => {
+                expect(path).toBe("/v1/projects/parent/branches/preview/promote/plan");
+                expect(options).toEqual({ maxJsonBytes: 512 * 1024, responseTimeoutMs: 5_000 });
+                calls.push({ path, body: null });
+                return ok(promotionPlan());
+            },
             post: async (path, body, options) => {
                 calls.push({ path, body });
                 expect(options).toEqual({ maxJsonBytes: 512 * 1024, responseTimeoutMs: 5_000, timeoutMs: 30_000 });
@@ -188,6 +197,9 @@ describe("branch CLI promotion", () => {
         });
         const result = await callback({ ...PROMOTE, confirm_destructive: true });
         expect(calls).toEqual([{
+            path: "/v1/projects/parent/branches/preview/promote/plan",
+            body: null,
+        }, {
             path: "/v1/projects/parent/branches/preview/promote",
             body: { mode: "migrations", plan_checksum: PLAN_CHECKSUM, confirm_destructive: true },
         }]);
@@ -208,13 +220,78 @@ describe("branch CLI promotion", () => {
         expect(text(result)).not.toContain("create table");
     });
 
-    test("accepts a verified zero-migration promotion", async () => {
+    test("skips POST for a scoped, unchanged promotion without fabricating an earlier successful mutation", async () => {
+        let reads = 0;
         const callback = captureBranchTool({
-            post: async () => ok(promotionResult({
-                applied: [], plan: promotionPlan({ pending: [], applied: [] }),
-            })),
+            get: async () => {
+                reads += 1;
+                return ok(promotionPlan({ pending: [], applied: [migrationEntry()] }));
+            },
         });
-        expect(text(await callback(PROMOTE))).toContain("completed: 0 applied");
+        expect(text(await callback(PROMOTE))).toContain("unchanged");
+        const result = await callback({ ...PROMOTE, json: true });
+        expect(result.isError).toBeUndefined();
+        expect(reads).toBe(2);
+        expect(payload(result)).toMatchObject({
+            ok: true, promoted: false, unchanged: true, mutation_sent: false,
+            project_ref: "parent", branch_ref: "preview", reviewed_plan_checksum: PLAN_CHECKSUM,
+            applied: [], plan: { pending: [], applied: [{ version: "202607180001", checksum: MIGRATION_CHECKSUM }] },
+            automatic_retry: false,
+        });
+        expect(text(result)).not.toContain("statements");
+    });
+
+    test.each([
+        ["changed plan", promotionPlan({ plan_checksum: "d".repeat(64) }), "PLAN_CHANGED"],
+        ["changed empty plan", promotionPlan({ plan_checksum: "d".repeat(64), pending: [] }), "PLAN_CHANGED"],
+        ["blocked plan", promotionPlan({
+            safe_to_apply: false, pending: [],
+            blocked: [{ code: "parent_ahead", version: "202607180002", name: null, message: "private" }],
+        }), "PLAN_BLOCKED"],
+        ["destructive plan", promotionPlan({
+            pending: [migrationEntry({ destructive: true })], requires_destructive_confirmation: true,
+        }), "DESTRUCTIVE_CONFIRMATION_REQUIRED"],
+    ] satisfies Array<[string, Record<string, unknown>, string]>)("preflight stops %s without POST", async (_name, plan, reason) => {
+        const callback = captureBranchTool({ get: async () => ok(plan) });
+        const result = await callback({ ...PROMOTE, json: true });
+        expect(result.isError).toBe(true);
+        expect(payload(result)).toMatchObject({
+            error: { code: "MUTATION_NOT_SUCCEEDED", http_status: null },
+            reason, mutation_sent: false, automatic_retry: false, plan_checksum: PLAN_CHECKSUM,
+        });
+        expect(text(result)).not.toContain("private");
+    });
+
+    test.each([
+        ["network", { ok: false, status: 500, transportError: true, data: {} }, "HTTP_ERROR", null],
+        ["unavailable", { ok: false, status: 503, data: { error: "private" } }, "HTTP_ERROR", 503],
+        ["unreadable", { ok: false, status: 200, responseReadError: true, data: {} }, "HTTP_ERROR", 200],
+        ["malformed", ok({}), "INVALID_RESPONSE", 200],
+        ["foreign", ok(promotionPlan({ branch_ref: "foreign" })), "INVALID_RESPONSE", 200],
+    ] satisfies Array<[string, HttpResult, string, number | null]>)("preflight %s is not an unknown mutation", async (_name, response, code, status) => {
+        const callback = captureBranchTool({ get: async () => response });
+        const result = await callback({ ...PROMOTE, json: true });
+        expect(result.isError).toBe(true);
+        expect(payload(result)).toMatchObject({
+            error: { code, http_status: status }, mutation_sent: false,
+        });
+        expect(text(result)).not.toContain("private");
+    });
+
+    test("accepts destructive migrations only with reviewed confirmation and matching receipts", async () => {
+        const entry = migrationEntry({ destructive: true });
+        let writes = 0;
+        const callback = captureBranchTool({
+            get: async () => ok(promotionPlan({ pending: [entry], requires_destructive_confirmation: true })),
+            post: async (_path, body) => {
+                writes += 1;
+                expect(body).toMatchObject({ confirm_destructive: true, plan_checksum: PLAN_CHECKSUM });
+                return ok(promotionResult({ applied: [entry], plan: promotionPlan({ pending: [], applied: [entry] }) }));
+            },
+        });
+        const result = await callback({ ...PROMOTE, confirm_destructive: true, json: true });
+        expect(payload(result)).toMatchObject({ ok: true, unchanged: false, mutation_sent: true });
+        expect(writes).toBe(1);
     });
 
     test.each([
@@ -228,6 +305,19 @@ describe("branch CLI promotion", () => {
         ["different applied checksum", promotionResult({ applied: [migrationEntry({ checksum: "d".repeat(64) })] })],
         ["duplicate applied versions", promotionResult({ applied: [migrationEntry(), migrationEntry()] })],
         ["foreign readback scope", promotionResult({ plan: promotionPlan({ parent_ref: "foreign", pending: [], applied: [migrationEntry()] }) })],
+        ["missing reviewed migration", promotionResult({ applied: [] })],
+        ["self-consistent unrelated migration", promotionResult({
+            applied: [migrationEntry({ version: "202607180999" })],
+            plan: promotionPlan({ pending: [], applied: [migrationEntry({ version: "202607180999" })] }),
+        })],
+        ["additional migration", promotionResult({
+            applied: [migrationEntry(), migrationEntry({ version: "202607180999" })],
+            plan: promotionPlan({ pending: [], applied: [migrationEntry(), migrationEntry({ version: "202607180999" })] }),
+        })],
+        ["self-consistent changed checksum", promotionResult({
+            applied: [migrationEntry({ checksum: "d".repeat(64) })],
+            plan: promotionPlan({ pending: [], applied: [migrationEntry({ checksum: "d".repeat(64) })] }),
+        })],
     ] satisfies Array<[string, Record<string, unknown>]>)("treats %s 2xx receipts as unknown, never replaying POST", async (_name, body) => {
         let calls = 0;
         const callback = captureBranchTool({
@@ -342,6 +432,7 @@ describe("branch CLI promotion", () => {
         registerBranchTools({
             tool(name, _description, schema, callback) { tools[name] = { schema, callback }; },
         }, mockHttp({
+            get: async () => ok(promotionPlan()),
             post: async () => ({ ok: false, status: 503, data: { error: "password=secret" } }),
         }), { projectRef: "parent" });
         const stdout = spyOn(console, "log").mockImplementation(() => undefined);
@@ -390,9 +481,14 @@ describe("branch CLI promotion", () => {
         ["server unavailable", JSON.stringify({ error: "password=secret" }), 503],
     ] satisfies Array<[string, string, number]>)("actual HTTP %s fails closed with one POST", async (_name, body, status) => {
         let calls = 0;
+        let reads = 0;
         const server = Bun.serve({
             hostname: "127.0.0.1", port: 0,
-            fetch() {
+            fetch(request) {
+                if (request.method === "GET") {
+                    reads += 1;
+                    return Response.json(promotionPlan());
+                }
                 calls += 1;
                 return new Response(body, { status, headers: { "content-type": "application/json" } });
             },
@@ -401,9 +497,30 @@ describe("branch CLI promotion", () => {
             const callback = register(new HttpTransport({ baseUrl: server.url.toString(), token: "local-test" }));
             const result = await callback({ ...PROMOTE, json: true });
             expect(calls).toBe(1);
+            expect(reads).toBe(1);
             expect(result.isError).toBe(true);
             expect(payload(result).error).toEqual({ code: "OUTCOME_UNKNOWN", http_status: status });
             expect(text(result)).not.toContain("secret");
+        } finally {
+            await server.stop(true);
+        }
+    });
+
+    test("actual HTTP no-op performs only one plan GET", async () => {
+        const requests: string[] = [];
+        const server = Bun.serve({
+            hostname: "127.0.0.1", port: 0,
+            fetch(request) {
+                requests.push(`${request.method} ${new URL(request.url).pathname}`);
+                return Response.json(promotionPlan({ pending: [], applied: [migrationEntry()] }));
+            },
+        });
+        try {
+            const callback = register(new HttpTransport({ baseUrl: server.url.toString(), token: "local-test" }));
+            expect(payload(await callback({ ...PROMOTE, json: true }))).toMatchObject({
+                ok: true, unchanged: true, promoted: false, mutation_sent: false,
+            });
+            expect(requests).toEqual(["GET /v1/projects/parent/branches/preview/promote/plan"]);
         } finally {
             await server.stop(true);
         }

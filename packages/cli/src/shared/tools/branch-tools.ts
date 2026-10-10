@@ -409,7 +409,7 @@ export function registerBranchTools(
                         result.transportError ? null : result.status, scope), args.json === true, false);
                 }
                 const plan = parsePromotionPlan(result.data, { parentRef: ref, branchRef });
-                if (!plan) {
+                if (result.status !== 200 || !plan) {
                     return promotionFailure(releaseControlFailure("branch.promotion_plan", "INVALID_RESPONSE",
                         result.status, scope), args.json === true, false);
                 }
@@ -438,7 +438,7 @@ export function registerBranchTools(
                         { ...beforeMutation, reason: "PREFLIGHT_FAILED" }), args.json === true, false);
                 }
                 const plan = parsePromotionPlan(preflight.data, { parentRef: ref, branchRef });
-                if (!plan) {
+                if (preflight.status !== 200 || !plan) {
                     return promotionFailure(releaseControlFailure("branch.promote", "INVALID_RESPONSE",
                         preflight.status, { ...beforeMutation, reason: "PREFLIGHT_UNVERIFIED" }),
                         args.json === true, false);
@@ -479,7 +479,7 @@ export function registerBranchTools(
                         || result.status === 408 || result.status >= 500);
                 }
                 const promoted = parsePromotionResult(result.data, { parentRef: ref, branchRef }, plan.pending);
-                if (!promoted) {
+                if (result.status !== 200 || !promoted) {
                     return promotionFailure(releaseControlFailure("branch.promote", "OUTCOME_UNKNOWN",
                         result.status, { ...state, mutation_sent: true }), args.json === true, true);
                 }

@@ -55,6 +55,53 @@ supacloud-cli branch promote \
 
 提升过程在控制数据库连接上同时锁住父项目和分支，并重新计算计划。迁移 SQL 使用父项目专属、无集群管理权限的数据库角色和独立连接执行，不能接触控制锁连接。计划发生漂移时会拒绝执行。只会把迁移账本中父项目缺失的 SQL 逐条应用到父项目；平台不会自动复制分支业务数据。
 
+### CLI 回执与不确定结果
+
+CI 可使用 `--json` 获取 `supacloud.cli.release-control.v1` 回执：
+
+```bash
+supacloud-cli branch promotion_plan --branch_ref <preview-ref> --json
+supacloud-cli branch promote --branch_ref <preview-ref> --plan_checksum <sha256> --json
+```
+
+CLI 校验父项目和分支归属、SHA-256 格式、迁移版本唯一性、阻断项及破坏性确认标志。成功回执必须明确 `branch_data_copied=false`，回读计划必须没有待执行迁移或阻断项；本次应用的迁移必须在回读账本摘要中以相同 checksum 出现。`reviewed_plan_checksum` 是提交时审阅的计划摘要，`plan.plan_checksum` 是执行后的账本摘要，二者可能不同。
+
+文本和 JSON 输出都不回显 SQL、远端错误原文或任意警告文本。阻断原因使用 CLI 内置说明；`reported_applied_versions` 只是服务端报告的部分应用线索，不代表 CLI 已独立验证提交结果。
+
+超时、5xx、响应体损坏/超限或不完整的 2xx 回执均返回 `OUTCOME_UNKNOWN`，并保留父项目、分支、审阅 checksum 和重新获取 `promotion_plan` 的参数。CLI 不自动重放 POST、不自动提升下一批迁移，也不自动反向执行 migration。收到明确 4xx 后仍须检查回执中的部分应用线索，不能假设之前的迁移全部回滚。
+
+此版本的计划/回执响应体上限为 512 KiB，响应体读取超时为 5 秒；promotion POST 请求头等待预算为 30 秒。超限是未确认结果，不是迁移失败证明。重新获取计划会调用现有平台计划接口，可能幂等准备账本元数据和迁移角色，不应把它描述成数据库层面的纯只读查询。
+
+验收场景：
+
+```gherkin
+Scenario: 查看已绑定环境的计划
+  Given 计划属于请求的父项目和 Preview 分支
+  When 用户执行 promotion_plan --json
+  Then CLI 返回经过校验的摘要并省略 SQL
+
+Scenario: 拒绝异域或矛盾计划
+  Given 计划归属不同或迁移 checksum 与结构不合法
+  When 用户查看计划
+  Then CLI 返回错误且不宣告计划可用于提升
+
+Scenario: 确认执行后的账本状态
+  Given 平台返回已提升回执和收敛的回读计划
+  When 已应用版本及 checksum 与回读摘要一致
+  Then CLI 才宣告提升完成并明确未复制分支数据
+
+Scenario: 请求结果无法确定
+  Given POST 超时或返回损坏、不完整的响应
+  When CLI 无法验证成功回执
+  Then CLI 保留请求身份并返回 OUTCOME_UNKNOWN
+  And CLI 不重复发送 POST 或反向迁移
+
+Scenario: 只读模式
+  Given CLI 处于只读模式
+  When 用户执行 promote --json
+  Then CLI 返回 READ_ONLY 错误且不发出写请求
+```
+
 ## 破坏性迁移
 
 包含删除列、删除表、删除策略/约束、关闭 RLS、截断或批量删除的迁移需要额外确认：

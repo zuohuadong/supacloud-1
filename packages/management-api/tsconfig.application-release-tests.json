@@ -31,6 +31,7 @@
     "tests/unit/application-activation.routes.test.ts",
     "tests/unit/application-gateway.test.ts",
     "tests/unit/application-migrations.test.ts",
+    "tests/unit/application-preview.service.test.ts",
     "tests/unit/application-deployment.test.ts"
   ]
 }

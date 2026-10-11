@@ -56,6 +56,7 @@ const REMOTE_APP_ACTIONS = {
     preview: "create_preview",
     previews: "list_previews",
     "preview-status": "get_preview",
+    "preview-reconcile": "reconcile_preview",
     "preview-cleanup": "cleanup_preview",
 } as const;
 
@@ -69,9 +70,9 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/transfer-plan/transfer/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Project ref (defaults to context)",
-    id: "[upload/configure/transfer-plan/transfer/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Application ID",
-    environment_id: "[configure/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Target environment ID",
+    ref: "[upload/configure/transfer-plan/transfer/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-reconcile/preview-cleanup] Project ref (defaults to context)",
+    id: "[upload/configure/transfer-plan/transfer/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-reconcile/preview-cleanup] Application ID",
+    environment_id: "[configure/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-reconcile/preview-cleanup] Target environment ID",
     configuration_id: "[promote-plan/deploy/deploy-plan/diff/rollback/preview] Immutable target configuration revision; required for deployment/preview; platform selects for default rollback",
     activation_id: "[deploy/rollback/reconcile/retire] Stable activation ID; auto-generated for deploy/rollback if omitted",
     expected_activation_id: "[deploy/rollback] Auto-selected from verified state; supply with activation_id for an exact retry",
@@ -81,7 +82,7 @@ const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
     source_ref: "[transfer-plan/transfer/promote-plan] Source project ref",
     source_release_id: "[transfer-plan/transfer/promote-plan] Source immutable release ID",
     source_environment_id: "[promote-plan] Source environment ID",
-    preview_id: "[preview-status/preview-cleanup] Preview receipt ID",
+    preview_id: "[preview-status/preview-reconcile/preview-cleanup] Preview receipt ID",
     branch_ref: "[preview-plan] Proposed branch ref; preview assigns its own",
     branch_name: "[preview] Branch display name",
     data_mode: "[preview-plan/preview] Default schema_only; full_clone copies rows",
@@ -1286,7 +1287,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
                 "plan", "build", "upload", "configure", "transfer-plan", "transfer", "promote-plan", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "history", "reconcile", "retire", "logs",
-                "preview-plan", "preview", "previews", "preview-status", "preview-cleanup"]), "App action; transfer reuses a verified release without build or activation; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
+                "preview-plan", "preview", "previews", "preview-status", "preview-reconcile", "preview-cleanup"]), "App action; transfer reuses a verified release without build or activation; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),

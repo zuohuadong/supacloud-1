@@ -10,7 +10,7 @@ import {
 } from "../../src/services/application-promotion";
 import type { ApplicationActiveRecord } from "../../src/services/application-activation";
 import { ApplicationMigrations } from "../../src/services/application-migrations";
-import type { ProjectMutationState } from "../../src/services/project-mutation.service";
+import { projectMutationResourceKey, type ProjectMutationState } from "../../src/services/project-mutation.service";
 import { stableSha256 } from "../../src/utils/stable-json";
 import { createApplicationRoutes } from "../../src/routes/applications";
 import { calculateMigrationChecksum } from "../../src/services/migration-promotion";
@@ -54,15 +54,30 @@ function evidence(projectRef: string): DeploymentEvidence {
   return { ...input, status: deriveDeploymentEvidenceStatus(input) };
 }
 function state(record: ApplicationActiveRecord): ProjectMutationState {
+  const desired = structuredClone(record);
+  const encoded = {
+    ...desired,
+    hosts: Object.entries(desired.hosts ?? {}).map(([target, hosts]) => ({ target, hosts })),
+    runtime: {
+      ...desired.runtime,
+      ports: Object.entries(desired.runtime.ports).map(([target, port]) => ({ target, port })),
+    },
+  };
   return {
     projectRef: record.runtime.release.project_ref, mutationId: activation, operation: "application.release.activate",
-    resourceKey: stableSha256({ applicationId: "reviews", environmentId: record.runtime.environmentId }),
-    requestFingerprint: "d".repeat(64), principal: { type: "master", id: "fixture" },
+    resourceKey: projectMutationResourceKey({
+      type: "application_release",
+      id: stableSha256({ applicationId: "reviews", environmentId: record.runtime.environmentId }),
+    }),
+    requestFingerprint: stableSha256({ desired, expectedActivationId: null }), principal: { type: "master", id: "fixture" },
     status: "succeeded", responseStatus: 200, receipt: {
       project_ref: record.runtime.release.project_ref, application_id: "reviews", environment_id: record.runtime.environmentId,
       release_id: record.runtime.release.release_id, activation_id: activation, replayed: false,
     },
-    checkpoint: {}, failureCode: null, leaseOwner: null, leaseExpiresAt: null, fencingEpoch: 1,
+    checkpoint: {
+      schema: "supacloud.application-activation.v1", phase: "committed", desired: encoded, previous: null,
+    },
+    failureCode: null, leaseOwner: null, leaseExpiresAt: null, fencingEpoch: 1,
     completedAt: new Date(now).toISOString(), createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(),
   };
 }
@@ -351,4 +366,51 @@ test("promotion API returns a busy conflict without a success-shaped plan", asyn
     code: "APPLICATION_PROMOTION_BUSY", error: "Application promotion plan is unavailable",
   });
   expect(f.reads()).toBe(0);
+});
+
+for (const side of ["source", "target"] as const) {
+  test.each(["bare-resource", "fingerprint", "missing-checkpoint", "prepared", "configuration-drift", "hosts-drift"] as const)(
+    `${side} journal rejects %s instead of accepting a receipt alone`, async fault => {
+      const f = fixture(), target = active("production");
+      f.setArtifact();
+      f.setTarget(target);
+      const journal = side === "source" ? f.sourceState : f.targetState;
+      const current = side === "source" ? f.source : target;
+      expect(journal.resourceKey).toStartWith("v1/application_release/");
+      if (fault === "bare-resource") journal.resourceKey = stableSha256({
+        applicationId: "reviews", environmentId: current.runtime.environmentId,
+      });
+      if (fault === "fingerprint") journal.requestFingerprint = "d".repeat(64);
+      if (fault === "missing-checkpoint") journal.checkpoint = {};
+      if (fault === "prepared") journal.checkpoint["phase"] = "prepared";
+      if (fault === "configuration-drift") current.configurationDigest = "e".repeat(64);
+      if (fault === "hosts-drift") current.hosts = { api: ["other.example.com"] };
+      const plan = await f.service.readPlan(f.input);
+      expect(plan[side].receipt_confirmed).toBe(false);
+      if (side === "source") {
+        expect(plan.action).toBe("blocked");
+        expect(plan.blockers).toContain("SOURCE_RECEIPT_UNCONFIRMED");
+      } else {
+        expect(plan.action).toBe("promote");
+      }
+    },
+  );
+}
+
+test.each(["source", "target"] as const)("canonical %s reconciliation remains valid journal evidence", async side => {
+  const f = fixture(), target = active("production");
+  f.setArtifact();
+  f.setTarget(target);
+  const journal = side === "source" ? f.sourceState : f.targetState;
+  const desired = side === "source" ? f.source : target;
+  journal.checkpoint["phase"] = "routed";
+  journal.receipt = { reconciliation: {
+    source: "project.release.authority", observed_at: new Date(now - 1000).toISOString(),
+    evidence_code: "RELEASE_AUTHORITY_CONFIRMED",
+    evidence_fingerprint: stableSha256({ schema: "supacloud.application-activation-recovery.v1", desired }),
+    target_status: "succeeded",
+  } };
+  const plan = await f.service.readPlan(f.input);
+  expect(plan[side].receipt_confirmed).toBe(true);
+  expect(plan.action).toBe("no-op");
 });

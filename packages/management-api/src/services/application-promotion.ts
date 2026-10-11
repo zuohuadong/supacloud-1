@@ -8,7 +8,7 @@ import {
   type ApplicationPromotionPlan, type ApplicationPromotionPlanContent, type ApplicationConfigurationView,
 } from "@supacloud/delivery";
 import {
-  applicationActivationMutations, hasApplicationActivationSuccessReceipt, parseApplicationActiveRecord,
+  applicationActivationMutations, parseSuccessfulApplicationActivation, parseApplicationActiveRecord,
   type ApplicationActiveRecord, type ApplicationActivationMutations,
 } from "./application-activation";
 import { ApplicationActiveStorage } from "./application-active-storage";
@@ -113,6 +113,17 @@ export class ApplicationPromotions {
     };
     const runtime = record.runtime, release = runtime.release;
     const receipt = await this.dependencies.mutations.read(release.project_ref, runtime.activationId);
+    let receiptConfirmed = false;
+    try {
+      // Reuse the durable journal parser, including its canonical resource key,
+      // checkpoint phase and request fingerprint. A receipt alone is not proof.
+      const { desired } = parseSuccessfulApplicationActivation(receipt, {
+        projectRef: release.project_ref, applicationId: release.application_id, environmentId: runtime.environmentId,
+      });
+      receiptConfirmed = stableStringify(desired) === stableStringify(record);
+    } catch {
+      // Invalid journal evidence blocks this observation without exposing it.
+    }
     const report = parseApplicationReadinessReport(await this.dependencies.readiness.inspect(runtime));
     const runtimePlan = applicationRuntimePlan(runtime);
     if (report.project_ref !== release.project_ref || report.application_id !== release.application_id
@@ -139,7 +150,7 @@ export class ApplicationPromotions {
       && fresh(evidence.recorded_at) && fresh(evidence.health.checked_at);
     return {
       activation_id: runtime.activationId,
-      receipt_confirmed: receipt !== null && hasApplicationActivationSuccessReceipt(receipt, record),
+      receipt_confirmed: receiptConfirmed,
       ready: report.ready,
       smoke_verified: smoke,
       evidence_sha256: evidence === null ? null : stableSha256(evidence),

@@ -7,7 +7,7 @@ import { applicationRuntimePlan, type ApplicationRuntimeInput } from "./applicat
 import type { ApplicationTargetEnvironment } from "./application-runtime-files";
 import { applicationGatewayRoute, type ApplicationGatewayInput } from "./application-gateway";
 import {
-  checkpointProjectMutation, isProjectMutationId,
+  checkpointProjectMutation, isProjectMutationId, projectMutationResourceKey,
   type MutationLeaseInput, type MutationPrincipal, type ProjectMutationState,
 } from "./project-mutation.service";
 import { createProjectReleaseMutations, type ReleaseMutationStore } from "./project-release-mutation";
@@ -207,12 +207,7 @@ function recoveryFingerprint(desired: ApplicationActiveRecord): string {
   return stableSha256({ schema: "supacloud.application-activation-recovery.v1", desired });
 }
 
-export function hasApplicationActivationSuccessReceipt(state: ProjectMutationState, desired: ApplicationActiveRecord): boolean {
-  if (state.projectRef !== desired.runtime.release.project_ref || state.mutationId !== desired.runtime.activationId
-    || state.operation !== "application.release.activate"
-    || state.resourceKey !== stableSha256({
-      applicationId: desired.runtime.release.application_id, environmentId: desired.runtime.environmentId,
-    })) return false;
+function hasSuccessReceipt(state: ProjectMutationState, desired: ApplicationActiveRecord): boolean {
   if (state.status !== "succeeded" || state.responseStatus !== 200) return false;
   if (stableStringify(state.receipt) === stableStringify(result(desired.runtime, false))) return true;
   const reconciliation = state.receipt?.["reconciliation"];
@@ -225,6 +220,34 @@ export function hasApplicationActivationSuccessReceipt(state: ProjectMutationSta
     evidence_code: "RELEASE_AUTHORITY_CONFIRMED", evidence_fingerprint: recoveryFingerprint(desired),
     target_status: "succeeded",
   } });
+}
+
+export function parseSuccessfulApplicationActivation(
+  state: ProjectMutationState | null,
+  scope: { projectRef: string; applicationId: string; environmentId: string },
+): { desired: ApplicationActiveRecord; previous: ApplicationActiveRecord | null } {
+  const resourceKey = projectMutationResourceKey({
+    type: "application_release",
+    id: stableSha256({ applicationId: scope.applicationId, environmentId: scope.environmentId }),
+  });
+  if (!state || state.projectRef !== scope.projectRef || state.operation !== "application.release.activate"
+    || state.resourceKey !== resourceKey || !isProjectMutationId(state.mutationId)) {
+    throw new Error("APPLICATION_ACTIVATION_CHECKPOINT_INVALID");
+  }
+  const desired = decodeRecord(state.checkpoint["desired"], {
+    release: { project_ref: scope.projectRef, application_id: scope.applicationId },
+    environmentId: scope.environmentId,
+  });
+  const checkpoint = parseCheckpoint(state.checkpoint, desired);
+  if (desired.runtime.activationId !== state.mutationId
+    || checkpoint.previous?.runtime.activationId === state.mutationId
+    || !["routed", "committed"].includes(checkpoint.phase)
+    || state.requestFingerprint !== stableSha256({
+      desired, expectedActivationId: checkpoint.previous?.runtime.activationId ?? null,
+    }) || !hasSuccessReceipt(state, desired)) {
+    throw new Error("APPLICATION_ACTIVATION_CHECKPOINT_INVALID");
+  }
+  return { desired, previous: checkpoint.previous };
 }
 
 /**
@@ -256,7 +279,7 @@ export class ApplicationActivationService {
     });
     if (!begun.lease) {
       if (begun.state.status !== "succeeded") throw new Error("APPLICATION_ACTIVATION_OUTCOME_UNRESOLVED");
-      if (!hasApplicationActivationSuccessReceipt(begun.state, desired)) {
+      if (!hasSuccessReceipt(begun.state, desired)) {
         throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
       }
       await this.verifyDesired(desired);
@@ -377,7 +400,7 @@ export class ApplicationActivationService {
       state = current;
     }
     if (state.status === "succeeded") {
-      if (!hasApplicationActivationSuccessReceipt(state, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
+      if (!hasSuccessReceipt(state, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
     } else if (state.status !== "outcome_unknown") {
       throw new Error("APPLICATION_ACTIVATION_NOT_RECOVERABLE");
     }
@@ -387,7 +410,7 @@ export class ApplicationActivationService {
     if (checkpoint.previous) await this.ports.requireStopped(checkpoint.previous.runtime);
     if (state.status !== "succeeded") await this.mutations.recover(state, recoveryFingerprint(desired));
     const recovered = await this.mutations.read(input.projectRef, input.activationId);
-    if (!recovered || !hasApplicationActivationSuccessReceipt(recovered, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
+    if (!recovered || !hasSuccessReceipt(recovered, desired)) throw new Error("APPLICATION_ACTIVATION_RECEIPT_INVALID");
     await this.verifyDesired(desired);
     return result(desired.runtime, true);
   }

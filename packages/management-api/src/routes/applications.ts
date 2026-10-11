@@ -27,6 +27,7 @@ import { buildApplicationPreviewReceipt } from "../services/application-preview-
 import {
   ApplicationPreviewService, APPLICATION_PREVIEW_MIN_TTL_SECONDS, APPLICATION_PREVIEW_MAX_TTL_SECONDS,
 } from "../services/application-preview.service";
+import { ApplicationDeployPlans, ApplicationDeployPlanError } from "../services/application-deploy-plan";
 import { ApplicationRollbackError, ApplicationRollbackSnapshots } from "../services/application-rollback";
 
 function activationFailure(error: unknown, identity: {
@@ -55,6 +56,7 @@ function activationFailure(error: unknown, identity: {
 
 interface ApplicationRouteDependencies {
   transfers?: Pick<ApplicationReleaseTransfers, "readPlan" | "transfer">;
+  deployPlans?: Pick<ApplicationDeployPlans, "read">;
   storage?: ApplicationReleaseStorage;
   authorize?: typeof requireProjectOrAdminAuth;
   projectExists?: (projectRef: string) => Promise<boolean>;
@@ -103,6 +105,9 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   const evidence = dependencies.evidence ?? new ApplicationDeploymentEvidenceStorage();
   const evidenceObserver = dependencies.evidenceObserver;
   const previews = dependencies.previews ?? new ApplicationPreviewService({ releases: storage });
+  const deployPlans = dependencies.deployPlans ?? new ApplicationDeployPlans({
+    releases: storage, active, readiness, migrations,
+  });
   const rollback = dependencies.rollback ?? new ApplicationRollbackSnapshots({ active, releases: storage });
   const persistObservedEvidence = async (values: { ref: string; id: string; environmentId: string }) => {
     if (!evidenceObserver) return;
@@ -125,6 +130,9 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
     .error(({ error }) => {
       if (error instanceof ApplicationReleaseTransferError) {
         return status(error.statusCode, { code: error.code, error: "Application release transfer is unavailable" });
+      }
+      if (error instanceof ApplicationDeployPlanError) {
+        return status(error.statusCode, { code: error.code, error: "Application deploy plan is unavailable" });
       }
       if (error instanceof ApplicationReleaseError || error instanceof ApplicationConfigurationError) {
         return status(error.statusCode, { code: error.code, error: error.message });
@@ -156,6 +164,16 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
     }, async ({ params: values }) => ({
       project_ref: values.ref, application_id: values.id, environment_id: values.environmentId,
       configuration: await configurations.read(scope(values)),
+    }))
+    .get("/:id/environments/:environmentId/deploy-plan", {
+      params: environmentParams,
+      query: t.Object({
+        release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+        configuration_id: ApplicationConfigurationIdSchema,
+      }),
+      detail: { tags: ["applications"], summary: "Compare a stored candidate with verified active state without runtime effects" },
+    }, ({ params: values, query }) => deployPlans.read({
+      ...scope(values), releaseId: query.release_id, configurationId: query.configuration_id,
     }))
     .get("/:id/environments/:environmentId/configurations/:configurationId", {
       params: t.Object({ ...environmentParams.properties, configurationId: ApplicationConfigurationIdSchema }),

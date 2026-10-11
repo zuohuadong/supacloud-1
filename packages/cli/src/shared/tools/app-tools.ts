@@ -44,6 +44,11 @@ const REMOTE_APP_ACTIONS = {
     reconcile: "reconcile_activation",
     retire: "retire_activation",
     logs: "logs",
+    "preview-plan": "get_preview_plan",
+    preview: "create_preview",
+    previews: "list_previews",
+    "preview-status": "get_preview",
+    "preview-cleanup": "cleanup_preview",
 } as const;
 
 export interface AppToolOptions {
@@ -56,15 +61,22 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/deploy-plan/diff/rollback] Required for deployment; platform selects for default rollback",
+    ref: "[upload/configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Project ref (defaults to context)",
+    id: "[upload/configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Application ID",
+    environment_id: "[configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Environment ID",
+    configuration_id: "[deploy/deploy-plan/diff/rollback/preview] Required for deployment/preview; platform selects for default rollback",
     activation_id: "[deploy/rollback/reconcile/retire] Stable activation ID; auto-generated for deploy/rollback if omitted",
     expected_activation_id: "[deploy/rollback] Auto-selected from verified state; supply with activation_id for an exact retry",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
-    release_id: "[deploy/deploy-plan/diff/rollback/reconcile] Required for deployment; defaults to journal-selected previous for rollback",
+    release_id: "[deploy/deploy-plan/diff/rollback/reconcile/preview-plan/preview] Required for deployment/preview; defaults to journal-selected previous for rollback",
+    preview_id: "[preview-status/preview-cleanup] Preview receipt ID",
+    branch_ref: "[preview-plan] Proposed branch ref; preview assigns its own",
+    branch_name: "[preview] Branch display name",
+    data_mode: "[preview-plan/preview] Default schema_only; full_clone copies rows",
+    ttl_seconds: "[preview-plan/preview] Lifetime from 300 to 604800 seconds; creation defaults to the platform TTL",
+    wait: "[preview/preview-status] Wait for verified readiness of the selected preview",
+    timeout_seconds: "[preview/preview-status] Observation budget with --wait, from 1 to 3600 seconds (default 300)",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -86,6 +98,13 @@ export interface AppToolArguments {
     configuration_path?: string;
     manifest_path?: string;
     release_id?: string;
+    preview_id?: string;
+    branch_ref?: string;
+    branch_name?: string;
+    data_mode?: "schema_only" | "full_clone";
+    ttl_seconds?: number;
+    wait?: boolean;
+    timeout_seconds?: number;
     kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource";
     template?: "minimal" | "http" | "command" | "edge";
     name?: string;
@@ -1167,7 +1186,8 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "reconcile", "retire", "logs"]), "App action; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
+                "plan", "build", "upload", "configure", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "reconcile", "retire", "logs",
+                "preview-plan", "preview", "previews", "preview-status", "preview-cleanup"]), "App action; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),

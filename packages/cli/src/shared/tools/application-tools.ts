@@ -20,12 +20,14 @@ import { registerTool, type ToolServer } from "../tool-server";
 import {
   releaseControlFailure, releaseControlMutationFailure, releaseControlSuccess, type ReleaseControlToolResponse,
 } from "./release-control-response";
+import { APPLICATION_PREVIEW_ACTIONS, APPLICATION_PREVIEW_FIELDS, applicationPreviewAction } from "./application-preview-tools";
 
 export const APPLICATION_TOOL_SCHEMA = {
   action: withDescription(stringEnum([
     "list_releases", "get_release", "upload_release", "get_runtime", "get_deployment_evidence",
     "get_configuration", "put_configuration", "get_deploy_plan", "deploy_release",
     "activate_release", "rollback_release", "get_rollback_snapshot", "reconcile_activation", "retire_activation",
+    ...APPLICATION_PREVIEW_ACTIONS,
     "logs",
   ]), "Action"),
   ref: withDescription(Type.String(), "Project ref"),
@@ -45,6 +47,7 @@ export const APPLICATION_TOOL_SCHEMA = {
   search: optional(Type.String(), "[logs] Full-text log filter"),
   start: optional(Type.String(), "[logs] ISO start timestamp"),
   end: optional(Type.String(), "[logs] ISO end timestamp"),
+  ...APPLICATION_PREVIEW_FIELDS,
 };
 const responseSchema = Type.Object({
   project_ref: Type.String(), application_id: ApplicationIdSchema, release: ApplicationReleaseRecordSchema,
@@ -295,6 +298,9 @@ export function registerApplicationTools(server: ToolServer, http: HttpTransport
       if (action === "deploy_release") return deployAction(http, args, project);
       if (action === "rollback_release" || action === "get_rollback_snapshot") {
         return rollbackAction(http, args, project);
+      }
+      if (APPLICATION_PREVIEW_ACTIONS.some(value => value === action)) {
+        return applicationPreviewAction(http, args, project);
       }
       if (action === "activate_release" || action === "reconcile_activation" || action === "retire_activation") {
         return activationAction(http, args, project);

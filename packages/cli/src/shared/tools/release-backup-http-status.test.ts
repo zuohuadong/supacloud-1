@@ -7,7 +7,7 @@ const ref = "proj";
 const backupId = `logical-full_${ref}_${"b".repeat(32)}`;
 const sha256 = "a".repeat(64);
 const path = `/v1/projects/${ref}/database/backups/logical`;
-const statuses = [201, 202, 204, 206, 299] as const;
+const statuses: number[] = [201, 202, 204, 206, 299];
 const backup = {
     backup_id: backupId, project_ref: ref, database: "private-database-marker", kind: "logical-full",
     created_at: "2026-10-10T00:00:00.000Z", completed_at: "2026-10-10T00:00:01.000Z",

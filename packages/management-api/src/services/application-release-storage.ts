@@ -76,6 +76,9 @@ export class ApplicationReleaseStorage {
 
   async importRelease(input: ImportApplicationRelease): Promise<ApplicationReleaseRecord> {
     if (!/^[A-Za-z0-9_-]{1,20}$/.test(input.projectRef) || !Value.Check(identity, input.applicationId)) invalid();
+    // Reserve the application release directory before inspecting staged bytes so a failed
+    // import never leaves a partial publication, while the empty directory stays observable.
+    await this.releasesDirectory(input.projectRef, input.applicationId, true);
     const archive = await readDeliveryExecutableArchive(input.manifestPath);
     const actualObjects = Object.fromEntries(archive.objects.map(({ object }) => [object.name, object.objectId]));
     if (stableStringify(input.expectedObjects) !== stableStringify(actualObjects)) {

@@ -68,6 +68,26 @@ use immutable static releases; `edge_function` targets use the existing verified
 Edge Function bundle protocol. The command runs the target build, publishes only
 that target, and reads the final identity back.
 
+### Application rollback
+
+Application releases can be inspected and rolled back without guessing from the
+release list:
+
+```bash
+supacloud-cli app rollback-plan --id reviews --environment_id test
+supacloud-cli app rollback --id reviews --environment_id test
+```
+
+The plan is read-only. For a default rollback, SupaCloud selects the previous
+activation from the successful journal, verifies its retained release and
+configuration evidence, and uses the current activation as the CAS value. The
+CLI creates a new activation ID and does not replay an uncertain request.
+Rollback re-runs compatibility, readiness and route checks; it does not reverse
+database migrations, restore business data, or undo external side effects.
+Explicit `--release_id`, `--configuration_id` and
+`--expected_activation_id` values remain available when an operator has a
+separately verified target.
+
 ### Remote test development sync
 
 For a dedicated test server, use `dev` to synchronize source files over SSH and

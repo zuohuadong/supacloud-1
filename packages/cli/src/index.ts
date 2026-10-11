@@ -339,9 +339,16 @@ EXAMPLES
   ${preferredCommand} app build --root .
   ${preferredCommand} app upload --ref abc123 --id orders --manifest_path generated/delivery/delivery.manifest.json
   ${preferredCommand} app configure --ref abc123 --id orders --environment_id test --configuration_path configuration.json
-  ${preferredCommand} app deploy --ref abc123 --id orders --environment_id test --release_id <sha256> --configuration_id <uuid> --activation_id <uuid> --expected_activation_id absent
+  ${preferredCommand} app deploy-plan --ref abc123 --id orders --environment_id test --release_id <sha256> --configuration_id <uuid>
+  ${preferredCommand} app diff --ref abc123 --id orders --environment_id test --release_id <sha256> --configuration_id <uuid>
+  ${preferredCommand} app deploy --ref abc123 --id orders --environment_id test --release_id <sha256> --configuration_id <uuid>
   ${preferredCommand} app status --ref abc123 --id orders --environment_id test
   ${preferredCommand} --env production app promote-plan --id orders --environment_id production --source_ref staging --source_environment_id staging --source_release_id <sha256>
+  ${preferredCommand} app preview-plan --ref abc123 --id orders --environment_id test --release_id <sha256> --branch_ref preview-orders
+  ${preferredCommand} app preview --ref abc123 --id orders --environment_id test --release_id <sha256> --configuration_id <uuid> --ttl_seconds 3600 --wait
+  ${preferredCommand} app previews --ref abc123 --id orders --environment_id test
+  ${preferredCommand} app preview-status --ref abc123 --id orders --environment_id test --preview_id <uuid> --wait --timeout_seconds 300
+  ${preferredCommand} app preview-cleanup --ref abc123 --id orders --environment_id test --preview_id <uuid>
   ${preferredCommand} app logs --ref abc123 --id orders --environment_id test
   ${preferredCommand} app rollback --ref abc123 --id orders --environment_id test --release_id <old-sha256> --configuration_id <uuid> --activation_id <new-uuid> --expected_activation_id <current-uuid>
   ${preferredCommand} app check --root . --strict

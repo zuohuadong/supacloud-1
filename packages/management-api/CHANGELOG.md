@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.104.0](https://github.com/vibeunion/supacloud/compare/management-api-v0.103.0...management-api-v0.104.0) (2026-10-11)
+
+
+### Features
+
+* **applications:** verified read-only deploy plan and no-op observation ([#1778](https://github.com/vibeunion/supacloud/issues/1778)) ([8d8098d](https://github.com/vibeunion/supacloud/commit/8d8098d2ae809c53da1f937d6c10139cbb153ae4))
+* **delivery:** inspect verified application activation history ([#1781](https://github.com/vibeunion/supacloud/issues/1781)) ([46e1ba4](https://github.com/vibeunion/supacloud/commit/46e1ba437bd6a2821d35fb69b1bd945df45e5f26))
+
+## [0.103.0](https://github.com/vibeunion/supacloud/compare/management-api-v0.102.0...management-api-v0.103.0) (2026-10-11)
+
+
+### Features
+
+* **applications:** journal-selected application rollback ([#1776](https://github.com/vibeunion/supacloud/issues/1776)) ([68a191c](https://github.com/vibeunion/supacloud/commit/68a191c73d9f5437303885a2f95ba33109d12bc5))
+
+## [0.102.0](https://github.com/vibeunion/supacloud/compare/management-api-v0.101.0...management-api-v0.102.0) (2026-10-10)
+
+
+### Features
+
+* **preview:** expire and safely clean isolated previews ([#1774](https://github.com/vibeunion/supacloud/issues/1774)) ([05f0605](https://github.com/vibeunion/supacloud/commit/05f060552dc49464b791109d64662c4a4f73eecc))
+
+
+### Bug Fixes
+
+* **preview:** gate readiness on branch activation evidence ([#1772](https://github.com/vibeunion/supacloud/issues/1772)) ([19bd977](https://github.com/vibeunion/supacloud/commit/19bd977415fb887195c4f164a808adef269a4cf6))
+
 ## [0.101.0](https://github.com/vibeunion/supacloud/compare/management-api-v0.100.0...management-api-v0.101.0) (2026-10-10)
 
 

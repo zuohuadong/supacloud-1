@@ -8,10 +8,11 @@ export { ComputeResourcesSchema } from "./worker-execution";
 export type { WorkerExecutionGroup, WorkerExecution, WorkerResourceUsage, ComputeResources } from "./worker-execution";
 export {
   ApplicationActivationIdSchema, ApplicationActivationWriteSchema, ApplicationActivationResultSchema,
-  ApplicationActivationRetirementResultSchema,
+  ApplicationActivationRetirementResultSchema, ApplicationRollbackSnapshotSchema,
 } from "./application-activation";
 export type {
   ApplicationActivationWrite, ApplicationActivationResult, ApplicationActivationRetirementResult,
+  ApplicationRollbackSnapshot,
 } from "./application-activation";
 export {
   ApplicationIdSchema, ApplicationReleaseIdSchema, ApplicationReleaseRecordSchema,

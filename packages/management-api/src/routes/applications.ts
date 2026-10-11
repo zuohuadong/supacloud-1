@@ -2,7 +2,7 @@ import { Elysia, status, t } from "elysia";
 import {
   ApplicationConfigurationWriteSchema, ApplicationConfigurationIdSchema,
   ApplicationActivationIdSchema, ApplicationActivationWriteSchema, ApplicationActivationResultSchema,
-  ApplicationActivationRetirementResultSchema, DeploymentEvidenceSchema, parseDeploymentEvidence,
+  ApplicationActivationRetirementResultSchema, ApplicationRollbackSnapshotSchema, DeploymentEvidenceSchema, parseDeploymentEvidence,
   type DeploymentEvidence,
 } from "@supacloud/delivery";
 import { sql } from "../db";
@@ -25,6 +25,7 @@ import { buildApplicationPreviewReceipt } from "../services/application-preview-
 import {
   ApplicationPreviewService, APPLICATION_PREVIEW_MIN_TTL_SECONDS, APPLICATION_PREVIEW_MAX_TTL_SECONDS,
 } from "../services/application-preview.service";
+import { ApplicationRollbackError, ApplicationRollbackSnapshots } from "../services/application-rollback";
 
 function activationFailure(error: unknown, identity: {
   project_ref: string; application_id: string; environment_id: string; activation_id: string;
@@ -64,6 +65,7 @@ interface ApplicationRouteDependencies {
   retirementVerifier?: unknown;
   principal?: typeof getVerifiedRequestPrincipal;
   previews?: ApplicationPreviewService;
+  rollback?: Pick<ApplicationRollbackSnapshots, "read">;
 }
 
 async function projectExists(ref: string): Promise<boolean> {
@@ -87,6 +89,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   const evidence = dependencies.evidence ?? new ApplicationDeploymentEvidenceStorage();
   const evidenceObserver = dependencies.evidenceObserver;
   const previews = dependencies.previews ?? new ApplicationPreviewService({ releases: storage });
+  const rollback = dependencies.rollback ?? new ApplicationRollbackSnapshots({ active, releases: storage });
   const persistObservedEvidence = async (values: { ref: string; id: string; environmentId: string }) => {
     if (!evidenceObserver) return;
     try {
@@ -108,6 +111,9 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
     .error(({ error }) => {
       if (error instanceof ApplicationReleaseError || error instanceof ApplicationConfigurationError) {
         return status(error.statusCode, { code: error.code, error: error.message });
+      }
+      if (error instanceof ApplicationRollbackError) {
+        return status(error.statusCode, { code: error.code, error: "Application rollback snapshot is unavailable" });
       }
       if (error instanceof ApplicationDevelopmentError) {
         return status(error.statusCode, { code: error.code, error: error.message });
@@ -168,6 +174,11 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         readiness: report,
       };
     })
+    .get("/:id/environments/:environmentId/rollback-snapshot", {
+      params: environmentParams,
+      response: { 200: ApplicationRollbackSnapshotSchema },
+      detail: { tags: ["applications"], summary: "Observe the journal-verified previous activation and current rollback CAS" },
+    }, ({ params: values }) => rollback.read(scope(values)))
     .get("/:id/environments/:environmentId/deployment-evidence", {
       params: environmentParams,
       detail: { tags: ["applications"], summary: "Read the last validated single-node deployment evidence" },

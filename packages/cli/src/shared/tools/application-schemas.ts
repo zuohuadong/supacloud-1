@@ -10,3 +10,4 @@ export const ApplicationActivationIdSchema = Delivery.ApplicationActivationIdSch
 export const ApplicationActivationWriteSchema = Delivery.ApplicationActivationWriteSchema;
 export const ApplicationActivationResultSchema = Delivery.ApplicationActivationResultSchema;
 export const ApplicationActivationRetirementResultSchema = Delivery.ApplicationActivationRetirementResultSchema;
+export const ApplicationRollbackSnapshotSchema = Delivery.ApplicationRollbackSnapshotSchema;

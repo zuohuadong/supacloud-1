@@ -39,10 +39,16 @@ const REMOTE_APP_ACTIONS = {
     configure: "put_configuration",
     deploy: "activate_release",
     status: "get_runtime",
-    rollback: "activate_release",
+    rollback: "rollback_release",
+    "rollback-plan": "get_rollback_snapshot",
     reconcile: "reconcile_activation",
     retire: "retire_activation",
     logs: "logs",
+    "preview-plan": "get_preview_plan",
+    preview: "create_preview",
+    previews: "list_previews",
+    "preview-status": "get_preview",
+    "preview-cleanup": "cleanup_preview",
 } as const;
 
 export interface AppToolOptions {
@@ -55,17 +61,24 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/status/rollback/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/rollback] Required immutable configuration revision",
-    activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID",
-    expected_activation_id: "[deploy/rollback] Required current activation ID, or absent for first activation",
+    ref: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/rollback-plan/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Project ref (defaults to context)",
+    id: "[upload/configure/transfer-plan/transfer/deploy/status/rollback/rollback-plan/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Application ID",
+    environment_id: "[configure/deploy/status/rollback/rollback-plan/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Environment ID",
+    configuration_id: "[deploy/rollback/preview] Required for deploy/preview/explicit rollback; platform selects for default rollback",
+    activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID; generated for rollback if omitted",
+    expected_activation_id: "[deploy/rollback] Required for deploy/explicit rollback; platform selects current CAS for default rollback",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
-    release_id: "[deploy/rollback/reconcile] Required immutable application release ID",
+    release_id: "[deploy/rollback/reconcile/preview-plan/preview] Required for deploy/reconcile/preview; defaults to journal-selected previous for rollback",
     source_ref: "[transfer-plan/transfer] Source project ref",
     source_release_id: "[transfer-plan/transfer] Source immutable release ID",
+    preview_id: "[preview-status/preview-cleanup] Preview receipt ID",
+    branch_ref: "[preview-plan] Proposed branch ref; preview assigns its own",
+    branch_name: "[preview] Branch display name",
+    data_mode: "[preview-plan/preview] Default schema_only; full_clone copies rows",
+    ttl_seconds: "[preview-plan/preview] Lifetime from 300 to 604800 seconds; creation defaults to the platform TTL",
+    wait: "[preview/preview-status] Wait for verified readiness of the selected preview",
+    timeout_seconds: "[preview/preview-status] Observation budget with --wait, from 1 to 3600 seconds (default 300)",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -89,6 +102,13 @@ export interface AppToolArguments {
     release_id?: string;
     source_ref?: string;
     source_release_id?: string;
+    preview_id?: string;
+    branch_ref?: string;
+    branch_name?: string;
+    data_mode?: "schema_only" | "full_clone";
+    ttl_seconds?: number;
+    wait?: boolean;
+    timeout_seconds?: number;
     kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource";
     template?: "minimal" | "http" | "command" | "edge";
     name?: string;
@@ -1170,7 +1190,8 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; transfer reuses a verified release without build or activation"),
+                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "deploy", "status", "rollback", "rollback-plan", "reconcile", "retire", "logs",
+                "preview-plan", "preview", "previews", "preview-status", "preview-cleanup"]), "App action; transfer reuses a verified release without build or activation; upload/configure only prepare; rollback activates the journal-selected previous release without schema downgrade"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),

@@ -7,7 +7,7 @@ import { applicationRuntimePlan, type ApplicationRuntimeInput } from "./applicat
 import type { ApplicationTargetEnvironment } from "./application-runtime-files";
 import { applicationGatewayRoute, type ApplicationGatewayInput } from "./application-gateway";
 import {
-  checkpointProjectMutation, isProjectMutationId,
+  checkpointProjectMutation, isProjectMutationId, projectMutationResourceKey,
   type MutationLeaseInput, type MutationPrincipal, type ProjectMutationState,
 } from "./project-mutation.service";
 import { createProjectReleaseMutations, type ReleaseMutationStore } from "./project-release-mutation";
@@ -220,6 +220,34 @@ function hasSuccessReceipt(state: ProjectMutationState, desired: ApplicationActi
     evidence_code: "RELEASE_AUTHORITY_CONFIRMED", evidence_fingerprint: recoveryFingerprint(desired),
     target_status: "succeeded",
   } });
+}
+
+export function parseSuccessfulApplicationActivation(
+  state: ProjectMutationState | null,
+  scope: { projectRef: string; applicationId: string; environmentId: string },
+): { desired: ApplicationActiveRecord; previous: ApplicationActiveRecord | null } {
+  const resourceKey = projectMutationResourceKey({
+    type: "application_release",
+    id: stableSha256({ applicationId: scope.applicationId, environmentId: scope.environmentId }),
+  });
+  if (!state || state.projectRef !== scope.projectRef || state.operation !== "application.release.activate"
+    || state.resourceKey !== resourceKey || !isProjectMutationId(state.mutationId)) {
+    throw new Error("APPLICATION_ACTIVATION_CHECKPOINT_INVALID");
+  }
+  const desired = decodeRecord(state.checkpoint["desired"], {
+    release: { project_ref: scope.projectRef, application_id: scope.applicationId },
+    environmentId: scope.environmentId,
+  });
+  const checkpoint = parseCheckpoint(state.checkpoint, desired);
+  if (desired.runtime.activationId !== state.mutationId
+    || checkpoint.previous?.runtime.activationId === state.mutationId
+    || !["routed", "committed"].includes(checkpoint.phase)
+    || state.requestFingerprint !== stableSha256({
+      desired, expectedActivationId: checkpoint.previous?.runtime.activationId ?? null,
+    }) || !hasSuccessReceipt(state, desired)) {
+    throw new Error("APPLICATION_ACTIVATION_CHECKPOINT_INVALID");
+  }
+  return { desired, previous: checkpoint.previous };
 }
 
 /**

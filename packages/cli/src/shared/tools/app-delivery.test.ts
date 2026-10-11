@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerAppTools, runAppTool, type AppToolArguments } from "./app-tools";
 import { registerApplicationTools } from "./application-tools";
-import type { HttpTransport } from "../transports/http";
+import { HttpTransport } from "../transports/http";
+import { Value } from "typebox/value";
+import { ApplicationActivationIdSchema, ApplicationActivationWriteSchema } from "./application-schemas";
+import type { ToolInvocation } from "../tool-server";
 import type { ToolSchema } from "../schema";
 import { parseToolArguments } from "../schema";
 import { executionMode, validateExecutionPolicyCoverage } from "../execution-policy";
@@ -29,10 +32,10 @@ function schema(): ToolSchema {
 async function fixture() {
     const root = await mkdtemp(join(packageRoot, ".app-delivery-test-"));
     await mkdir(join(root, "src"));
-    await writeFile(join(root, "tsconfig.json"), JSON.stringify({
+    await Bun.write(join(root, "tsconfig.json"), JSON.stringify({
         compilerOptions: { experimentalDecorators: true, target: "ES2022", module: "ESNext", moduleResolution: "bundler" },
     }));
-    await writeFile(join(root, "src/orders.ts"), `
+    await Bun.write(join(root, "src/orders.ts"), `
 function Module(_options: unknown): ClassDecorator { return () => {}; }
 function Controller(_path: string): ClassDecorator { return () => {}; }
 function Get(_path: string): MethodDecorator { return () => {}; }
@@ -44,7 +47,7 @@ export class OrdersController {
 @Module({ name: "orders", providers: [], controllers: [OrdersController] })
 export class OrdersModule {}
 `);
-    await writeFile(join(root, "supacloud.config.ts"), `export default {
+    await Bun.write(join(root, "supacloud.config.ts"), `export default {
         root: "src", outDir: "artifacts", strict: false,
         effect: { requireRouteEffects: false, requireErrorMappings: false, requireDependencies: false },
         delivery: { version: 1, targets: [{ name: "api", kind: "api", modules: ["orders"] }] }
@@ -56,7 +59,7 @@ async function snapshot(root: string): Promise<Record<string, string>> {
     const files = await readdir(root, { recursive: true, withFileTypes: true });
     return Object.fromEntries(await Promise.all(files.filter(file => file.isFile()).map(async file => {
         const path = join(file.parentPath, file.name);
-        return [path, await readFile(path, "utf8")];
+        return [path, await Bun.file(path).text()];
     })));
 }
 
@@ -68,6 +71,9 @@ test("merged app schema preserves credential-free local arguments and classifies
         expect(executionMode("app", action, {})).toBe("local");
     }
     expect(executionMode("app", "status", {})).toBe("read");
+    expect(executionMode("app", "rollback-plan", {})).toBe("read");
+    expect(executionMode("applications", "get_rollback_snapshot", {})).toBe("read");
+    expect(executionMode("applications", "rollback_release", {})).toBe("write");
     for (const action of ["upload", "configure", "deploy", "rollback", "reconcile", "retire"]) {
         expect(executionMode("app", action, { dry_run: true })).toBe("write");
     }
@@ -109,7 +115,7 @@ test("build reuses compiler manifest output without delegating deployment", asyn
 test("build blocks configured database projects before writing when their checker is unavailable", async () => {
     const root = await fixture();
     try {
-        await writeFile(join(root, "database.sources.json"), '{"version":1}');
+        await Bun.write(join(root, "database.sources.json"), '{"version":1}');
         const before = await snapshot(root);
         const result = await runAppTool({ action: "build", root });
         const body = JSON.parse(result.content[0]!.text);
@@ -124,7 +130,7 @@ test("build blocks configured database projects before writing when their checke
 test("check and doctor surface database gate failures without regenerating contracts", async () => {
     const root = await fixture();
     try {
-        await writeFile(join(root, "database.sources.json"), '{"version":1}');
+        await Bun.write(join(root, "database.sources.json"), '{"version":1}');
         const before = await snapshot(root);
         for (const action of ["check", "doctor"] as const) {
             const result = await runAppTool({ action, root, format: "json" });
@@ -138,7 +144,8 @@ test("check and doctor surface database gate failures without regenerating contr
 test("remote app actions delegate once and return the identical receipt without fabrication", async () => {
     const aliases = {
         upload: "upload_release", configure: "put_configuration", deploy: "activate_release",
-        status: "get_runtime", rollback: "activate_release", reconcile: "reconcile_activation", retire: "retire_activation",
+        status: "get_runtime", rollback: "rollback_release", "rollback-plan": "get_rollback_snapshot",
+        reconcile: "reconcile_activation", retire: "retire_activation",
     } as const;
     for (const [alias, action] of Object.entries(aliases)) {
         let calls = 0;
@@ -176,7 +183,7 @@ test("rollback uses activation endpoint only and keeps malformed responses unkno
         const result = await runAppTool({ action: "rollback", ...identity }, { getApplications: () => delegate });
         const receipt = JSON.parse(result.content[0]!.text);
         expect(calls).toBe(1);
-        expect(receipt.operation).toBe("applications.activate_release");
+        expect(receipt.operation).toBe("applications.rollback_release");
         expect(receipt.release_id).toBe(identity.release_id);
         expect(receipt.rolled_back).toBeUndefined();
         if ("activation_id" in data) expect(receipt.ok).toBe(true);
@@ -276,7 +283,7 @@ test("CLI remote wiring uses the context ref and never retries or relabels an un
         const rollback = await cli(root, ["app", "rollback", ...args], env);
         expect(rollback.code).toBe(1);
         expect(rollback.output).toContain("OUTCOME_UNKNOWN");
-        expect(rollback.output).toContain("applications.activate_release");
+        expect(rollback.output).toContain("applications.rollback_release");
         expect(rollback.output).not.toContain('"rolled_back"');
         expect(requests).toEqual([
             { method: "GET", path: "/v1/projects/project/applications/orders/environments/test/runtime", body: null },
@@ -290,6 +297,195 @@ test("CLI remote wiring uses the context ref and never retries or relabels an un
         ]);
     } finally {
         server.stop(true);
+        await rm(root, { recursive: true, force: true });
+    }
+}, 30_000);
+
+function rollbackSnapshot(overrides: Record<string, unknown> = {}) {
+    return {
+        schema: "supacloud.application-rollback-snapshot.v1",
+        project_ref: identity.ref, application_id: identity.id, environment_id: identity.environment_id,
+        active: {
+            activation_id: identity.expected_activation_id, release_id: "b".repeat(64),
+            configuration_id: "41234567-89ab-4def-8123-456789abcdef",
+        },
+        previous: {
+            activation_id: "51234567-89ab-4def-8123-456789abcdef",
+            release_id: identity.release_id, configuration_id: identity.configuration_id,
+        },
+        ...overrides,
+    };
+}
+
+function rollbackHttp(snapshot: unknown, fault?: "malformed" | "foreign" | "unavailable" | "not-found") {
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(request) {
+            const path = new URL(request.url).pathname;
+            const body: unknown = request.method === "POST" ? await request.json() : null;
+            calls.push({ method: request.method, path, body });
+            if (request.method === "GET") {
+                expect(path).toBe("/v1/projects/project/applications/orders/environments/test/rollback-snapshot");
+                return Response.json(snapshot, { status: fault === "not-found" ? 404 : 200 });
+            }
+            expect(path).toBe("/v1/projects/project/applications/orders/environments/test/activations");
+            expect(Value.Check(ApplicationActivationWriteSchema, body)).toBe(true);
+            if (!Value.Check(ApplicationActivationWriteSchema, body)) return new Response("invalid", { status: 400 });
+            if (fault === "malformed") return new Response("invalid", { status: 200 });
+            if (fault === "unavailable") return Response.json({ password: "must-not-escape" }, { status: 503 });
+            return Response.json({
+                project_ref: identity.ref, application_id: identity.id, environment_id: identity.environment_id,
+                release_id: body.release_id,
+                activation_id: fault === "foreign" ? crypto.randomUUID() : body.activation_id,
+                replayed: false,
+            });
+        },
+    });
+    let delegate: ToolInvocation | undefined;
+    registerApplicationTools({
+        tool(_name, _description, value, callback) {
+            validateExecutionPolicyCoverage({ applications: { schema: value } });
+            delegate = callback;
+        },
+    }, new HttpTransport({ baseUrl: server.url.toString(), token: "local-rollback-fixture" }));
+    if (!delegate) throw new Error("Missing applications delegate");
+    return { server, calls, delegate };
+}
+
+const defaultRollback = { action: "rollback" as const, id: identity.id, environment_id: identity.environment_id };
+
+test("default rollback selects platform previous and generates one activation identity", async () => {
+    const f = rollbackHttp(rollbackSnapshot());
+    try {
+        const result = await runAppTool(defaultRollback, { projectRef: identity.ref, getApplications: () => f.delegate });
+        const output: Record<string, unknown> = JSON.parse(result.content[0]!.text);
+        expect(result.isError).toBeUndefined();
+        expect(output).toMatchObject({
+            ok: true, operation: "applications.rollback_release", release_id: identity.release_id,
+            configuration_id: identity.configuration_id, expected_activation_id: identity.expected_activation_id,
+        });
+        expect(Value.Check(ApplicationActivationIdSchema, output.activation_id)).toBe(true);
+        expect(output.activation_id).not.toBe(identity.expected_activation_id);
+        expect(f.calls.map(call => call.method)).toEqual(["GET", "POST"]);
+        expect(f.calls[1]!.body).toEqual({
+            activation_id: output.activation_id, release_id: identity.release_id,
+            configuration_id: identity.configuration_id, expected_activation_id: identity.expected_activation_id,
+        });
+    } finally { await f.server.stop(true); }
+});
+
+test("rollback-plan returns the verified snapshot without activating", async () => {
+    const snapshot = rollbackSnapshot();
+    const f = rollbackHttp(snapshot);
+    try {
+        const result = await runAppTool({ ...defaultRollback, action: "rollback-plan" },
+            { projectRef: identity.ref, getApplications: () => f.delegate });
+        expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+            ok: true, operation: "applications.get_rollback_snapshot", snapshot,
+        });
+        expect(f.calls.map(call => call.method)).toEqual(["GET"]);
+    } finally { await f.server.stop(true); }
+});
+
+test.each([
+    ["foreign project", rollbackSnapshot({ project_ref: "other" })],
+    ["foreign application", rollbackSnapshot({ application_id: "other" })],
+    ["foreign environment", rollbackSnapshot({ environment_id: "production" })],
+    ["incomplete response", {}],
+    ["missing previous", rollbackSnapshot({ previous: null })],
+    ["missing active", rollbackSnapshot({ active: null })],
+    ["same activation", rollbackSnapshot({ previous: { ...rollbackSnapshot().previous, activation_id: identity.expected_activation_id } })],
+    ["invalid previous release", rollbackSnapshot({ previous: { ...rollbackSnapshot().previous, release_id: "latest" } })],
+    ["extra secret fields", rollbackSnapshot({ password: "must-not-escape" })],
+] satisfies Array<[string, unknown]>)("default rollback refuses %s without guessing or POST", async (_name, snapshot) => {
+    const f = rollbackHttp(snapshot);
+    try {
+        const result = await runAppTool(defaultRollback, { projectRef: identity.ref, getApplications: () => f.delegate });
+        expect(result.isError).toBe(true);
+        expect(f.calls.map(call => call.method)).toEqual(["GET"]);
+        expect(result.content[0]!.text).not.toContain("must-not-escape");
+    } finally { await f.server.stop(true); }
+});
+
+test.each(["malformed", "foreign", "unavailable"] as const)("default rollback %s receipt retains exact identities without replay", async fault => {
+    const f = rollbackHttp(rollbackSnapshot(), fault);
+    try {
+        const result = await runAppTool(defaultRollback, { projectRef: identity.ref, getApplications: () => f.delegate });
+        const output: Record<string, unknown> = JSON.parse(result.content[0]!.text);
+        expect(result.isError).toBe(true);
+        expect(output).toMatchObject({
+            operation: "applications.rollback_release", error: { code: "OUTCOME_UNKNOWN" },
+            release_id: identity.release_id, configuration_id: identity.configuration_id,
+            expected_activation_id: identity.expected_activation_id,
+        });
+        expect(Value.Check(ApplicationActivationIdSchema, output.activation_id)).toBe(true);
+        expect(f.calls.map(call => call.method)).toEqual(["GET", "POST"]);
+        expect(result.content[0]!.text).not.toContain("must-not-escape");
+    } finally { await f.server.stop(true); }
+});
+
+test("older servers cannot trigger a guessed default rollback", async () => {
+    const f = rollbackHttp({}, "not-found");
+    try {
+        const result = await runAppTool(defaultRollback, { projectRef: identity.ref, getApplications: () => f.delegate });
+        expect(JSON.parse(result.content[0]!.text)).toMatchObject({ ok: false, error: { code: "HTTP_ERROR", http_status: 404 } });
+        expect(f.calls.map(call => call.method)).toEqual(["GET"]);
+    } finally { await f.server.stop(true); }
+});
+
+test("default rollback rejects mixed configuration/CAS flags before HTTP", async () => {
+    const f = rollbackHttp(rollbackSnapshot());
+    try {
+        for (const flags of [
+            { configuration_id: identity.configuration_id },
+            { expected_activation_id: identity.expected_activation_id },
+        ]) {
+            await expect(runAppTool({ ...defaultRollback, ...flags },
+                { projectRef: identity.ref, getApplications: () => f.delegate })).rejects.toThrow("cannot mix");
+        }
+        expect(f.calls).toEqual([]);
+    } finally { await f.server.stop(true); }
+});
+
+test("default rollback rejects reused current or previous activation IDs before POST", async () => {
+    const snapshot = rollbackSnapshot();
+    const f = rollbackHttp(snapshot);
+    try {
+        for (const activation_id of [snapshot.active.activation_id, snapshot.previous.activation_id]) {
+            await expect(runAppTool({ ...defaultRollback, activation_id },
+                { projectRef: identity.ref, getApplications: () => f.delegate })).rejects.toThrow("new activation ID");
+        }
+        expect(f.calls.map(call => call.method)).toEqual(["GET", "GET"]);
+    } finally { await f.server.stop(true); }
+});
+
+test("CLI default rollback and rollback-plan retain context and production/read-only guards", async () => {
+    const root = await fixture();
+    const f = rollbackHttp(rollbackSnapshot());
+    const variables = {
+        SUPACLOUD_API_URL: f.server.url.toString(), SUPACLOUD_API_TOKEN: "local-rollback-fixture",
+        SUPACLOUD_PROJECT_REF: identity.ref,
+    };
+    const args = ["--id", identity.id, "--environment_id", identity.environment_id];
+    try {
+        const readOnly = await cli(root, ["app", "rollback", ...args], { ...variables, SUPACLOUD_READ_ONLY: "true" });
+        expect(readOnly.code).toBe(1);
+        expect(f.calls).toEqual([]);
+        const unconfirmed = await cli(root, ["app", "rollback", ...args], { ...variables, SUPACLOUD_ENV: "production" });
+        expect(unconfirmed.code).toBe(1);
+        expect(f.calls).toEqual([]);
+        const plan = await cli(root, ["app", "rollback-plan", ...args], { ...variables, SUPACLOUD_READ_ONLY: "true" });
+        expect(plan.code, plan.output).toBe(0);
+        expect(JSON.parse(plan.output)).toMatchObject({ operation: "applications.get_rollback_snapshot" });
+        const rollback = await cli(root, ["app", "rollback", ...args], variables);
+        expect(rollback.code, rollback.output).toBe(0);
+        expect(JSON.parse(rollback.output)).toMatchObject({
+            operation: "applications.rollback_release", configuration_id: identity.configuration_id,
+        });
+        expect(f.calls.map(call => call.method)).toEqual(["GET", "GET", "POST"]);
+    } finally {
+        await f.server.stop(true);
         await rm(root, { recursive: true, force: true });
     }
 }, 30_000);

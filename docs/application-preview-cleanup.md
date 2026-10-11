@@ -21,7 +21,6 @@ revision or reset a newer target head.
 
 Receipts without a pinned source revision cannot adopt a later mutable head.
 A missing source or mismatched clone identity cannot produce a ready preview.
-
 ## Acceptance
 
 ```gherkin
@@ -55,7 +54,6 @@ Scenario: Recover a committed configuration without allocating a new revision
   When a restarted control plane resumes provisioning
   Then it clones the same source into the same target configuration ID
   And does not read the mutable source head
-
 Scenario: Persist cleanup intent before interrupting a selected preview
   Given an explicitly selected active preview
   When the cleanup intent cannot be committed

@@ -520,7 +520,6 @@ test("a preview without a pinned source revision never clones a later mutable he
   expect(receipt?.resources.smoke_test.failed).toContain("configuration_revision");
   expect(clones).toBe(0);
 });
-
 test("activation identity is persisted before effects and reused after process recovery", async () => {
   const blocked = Promise.withResolvers<void>();
   const invoked = Promise.withResolvers<void>();

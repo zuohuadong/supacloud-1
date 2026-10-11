@@ -216,7 +216,7 @@ function validMutationTerminalFields(mutation: Record<string, unknown>): boolean
         && canonicalTimestamp(mutation.created_at) && canonicalTimestamp(mutation.updated_at);
 }
 
-function safeMutationStatus(candidate: unknown): SafeMutationStatus | null {
+export function safeMutationStatus(candidate: unknown): SafeMutationStatus | null {
     const mutation = exactRecord(candidate, MUTATION_KEYS);
     if (!mutation || !validMutationIdentity(mutation) || !validMutationTerminalFields(mutation)) return null;
     const principal = safePrincipal(mutation.principal);

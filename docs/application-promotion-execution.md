@@ -25,8 +25,9 @@ unknown outcome and inspect the ledger before deciding recovery.
 
 The scenarios below are the promotion-level acceptance contract. Executor,
 activation delegation, execution API and promotion status/reconcile APIs have
-local regression coverage. CLI execution and native PostgreSQL acceptance are
-remaining work. Generic mutation status does not substitute for observed
+local regression coverage. CLI execution, no-op handling, scoped status/reconcile
+and preview commands have focused local coverage. Native PostgreSQL acceptance
+remains separate work. Generic mutation status does not substitute for observed
 reconciliation.
 
 Promotion and activation cannot independently claim the same

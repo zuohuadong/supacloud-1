@@ -55,6 +55,8 @@ jobs:
           bun install --frozen-lockfile --cwd packages/management-api
           bun install --frozen-lockfile --cwd packages/cli
           bun install --frozen-lockfile --cwd packages/web-console
+      - name: Prepare CLI runtime dependencies
+        run: bun run --cwd packages/cli prepare:db
       - name: Validate deployment evidence and platform routes
         run: |
           bun test packages/delivery/src/deployment-evidence.test.ts

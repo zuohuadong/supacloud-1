@@ -8,16 +8,30 @@ export { ComputeResourcesSchema } from "./worker-execution";
 export type { WorkerExecutionGroup, WorkerExecution, WorkerResourceUsage, ComputeResources } from "./worker-execution";
 export {
   ApplicationActivationIdSchema, ApplicationActivationWriteSchema, ApplicationActivationResultSchema,
-  ApplicationActivationRetirementResultSchema,
+  ApplicationActivationRetirementResultSchema, ApplicationRollbackSnapshotSchema,
 } from "./application-activation";
 export type {
   ApplicationActivationWrite, ApplicationActivationResult, ApplicationActivationRetirementResult,
+  ApplicationRollbackSnapshot,
 } from "./application-activation";
+export { ApplicationDeployPlanSchema, parseApplicationDeployPlan } from "./application-deploy-plan";
+export type { ApplicationDeployPlan } from "./application-deploy-plan";
+export {
+  ApplicationActivationHistoryPositionSchema, ApplicationActivationHistoryCursorSchema,
+  ApplicationActivationHistorySchema, applicationHistoryCursor, applicationHistoryPositionBefore,
+  applicationHistoryTimestampMilliseconds, parseApplicationActivationHistory, parseApplicationHistoryCursor,
+} from "./application-history";
+export type { ApplicationActivationHistory, ApplicationActivationHistoryPosition } from "./application-history";
 export {
   ApplicationIdSchema, ApplicationReleaseIdSchema, ApplicationReleaseRecordSchema,
   applicationReleaseId, parseApplicationReleaseRecord,
 } from "./application-release";
 export type { ApplicationReleaseRecord, ApplicationReleaseInventory } from "./application-release";
+export {
+  ApplicationReleaseTransferPlanSchema, ApplicationReleaseTransferResultSchema,
+  parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult,
+  type ApplicationReleaseTransferPlan, type ApplicationReleaseTransferResult,
+} from "./application-release-transfer";
 export {
   APPLICATION_RESERVED_ENVIRONMENT_NAMES, ApplicationConfigurationIdSchema, ApplicationConfigurationSchema,
   ApplicationConfigurationWriteSchema, ApplicationConfigurationViewSchema, assertApplicationConfigurationScope,

@@ -2,12 +2,14 @@ import { Elysia, status, t } from "elysia";
 import {
   ApplicationConfigurationWriteSchema, ApplicationConfigurationIdSchema,
   ApplicationActivationIdSchema, ApplicationActivationWriteSchema, ApplicationActivationResultSchema,
-  ApplicationActivationRetirementResultSchema, DeploymentEvidenceSchema, parseDeploymentEvidence,
-  type DeploymentEvidence,
+  ApplicationActivationRetirementResultSchema, ApplicationRollbackSnapshotSchema, DeploymentEvidenceSchema, parseDeploymentEvidence,
+  ApplicationReleaseTransferPlanSchema, ApplicationReleaseTransferResultSchema,
+  ApplicationActivationHistorySchema, ApplicationActivationHistoryCursorSchema, type DeploymentEvidence,
 } from "@supacloud/delivery";
 import { sql } from "../db";
 import { getVerifiedRequestPrincipal, requireProjectOrAdminAuth } from "../middleware/auth";
 import { ApplicationReleaseError, ApplicationReleaseStorage } from "../services/application-release-storage";
+import { ApplicationReleaseTransfers, ApplicationReleaseTransferError } from "../services/application-release-transfer";
 import { ApplicationDevelopmentError, extractApplicationDevelopment } from "../services/application-development.service";
 import { uploadApplicationRelease } from "../services/application-release-upload";
 import { ApplicationActiveStorage } from "../services/application-active-storage";
@@ -22,7 +24,10 @@ import { ApplicationDeploymentEvidenceObserver } from "../services/application-d
 import { victoriaLogsService } from "../services/victorialogs.service";
 import { applicationRuntimePlan } from "../services/application-runtime";
 import { buildApplicationPreviewReceipt } from "../services/application-preview-contract";
-import { ApplicationPreviewService } from "../services/application-preview.service";
+import { ApplicationPreviewService, APPLICATION_PREVIEW_MIN_TTL_SECONDS, APPLICATION_PREVIEW_MAX_TTL_SECONDS } from "../services/application-preview.service";
+import { ApplicationDeployPlans, ApplicationDeployPlanError } from "../services/application-deploy-plan";
+import { ApplicationRollbackError, ApplicationRollbackSnapshots } from "../services/application-rollback";
+import { ApplicationActivationHistoryReader, ApplicationHistoryError } from "../services/application-history";
 
 function activationFailure(error: unknown, identity: {
   project_ref: string; application_id: string; environment_id: string; activation_id: string;
@@ -49,6 +54,8 @@ function activationFailure(error: unknown, identity: {
 }
 
 interface ApplicationRouteDependencies {
+  transfers?: Pick<ApplicationReleaseTransfers, "readPlan" | "transfer">;
+  deployPlans?: Pick<ApplicationDeployPlans, "read">;
   storage?: ApplicationReleaseStorage;
   authorize?: typeof requireProjectOrAdminAuth;
   projectExists?: (projectRef: string) => Promise<boolean>;
@@ -62,6 +69,8 @@ interface ApplicationRouteDependencies {
   retirementVerifier?: unknown;
   principal?: typeof getVerifiedRequestPrincipal;
   previews?: ApplicationPreviewService;
+  rollback?: Pick<ApplicationRollbackSnapshots, "read">;
+  history?: Pick<ApplicationActivationHistoryReader, "read">;
 }
 
 async function projectExists(ref: string): Promise<boolean> {
@@ -78,6 +87,17 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   const storage = dependencies.storage ?? new ApplicationReleaseStorage();
   const authorize = dependencies.authorize ?? requireProjectOrAdminAuth;
   const exists = dependencies.projectExists ?? projectExists;
+  const transfers = dependencies.transfers ?? new ApplicationReleaseTransfers(storage);
+  const sourceAccess = async (request: Request, ref: string, id: string, releaseId: string) => {
+    const url = new URL(request.url);
+    url.pathname = `/v1/projects/${ref}/applications/${id}/releases/${releaseId}`;
+    url.search = "";
+    // 重新构造源 GET 请求，使项目 scope 和委托读取权限均基于源路径。
+    const sourceRequest = new Request(url, { method: "GET", headers: request.headers });
+    const denied = await authorize(sourceRequest, ref);
+    if (denied) throw new ApplicationReleaseTransferError("APPLICATION_RELEASE_TRANSFER_SOURCE_DENIED", denied.status);
+    if (!await exists(ref)) throw new ApplicationReleaseTransferError("APPLICATION_RELEASE_TRANSFER_SOURCE_NOT_FOUND", 404);
+  };
   const active = dependencies.active ?? new ApplicationActiveStorage();
   const readiness = dependencies.readiness ?? new ApplicationReadiness();
   const migrations = dependencies.migrations ?? new ApplicationMigrations({ storage });
@@ -85,6 +105,11 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   const evidence = dependencies.evidence ?? new ApplicationDeploymentEvidenceStorage();
   const evidenceObserver = dependencies.evidenceObserver;
   const previews = dependencies.previews ?? new ApplicationPreviewService({ releases: storage });
+  const deployPlans = dependencies.deployPlans ?? new ApplicationDeployPlans({
+    releases: storage, active, readiness, migrations,
+  });
+  const rollback = dependencies.rollback ?? new ApplicationRollbackSnapshots({ active, releases: storage });
+  const history = dependencies.history ?? new ApplicationActivationHistoryReader({ active });
   const persistObservedEvidence = async (values: { ref: string; id: string; environmentId: string }) => {
     if (!evidenceObserver) return;
     try {
@@ -104,8 +129,20 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   });
   const routes = new Elysia({ prefix: "/v1/projects/:ref/applications", name: "application-releases" })
     .error(({ error }) => {
+      if (error instanceof ApplicationReleaseTransferError) {
+        return status(error.statusCode, { code: error.code, error: "Application release transfer is unavailable" });
+      }
+      if (error instanceof ApplicationDeployPlanError) {
+        return status(error.statusCode, { code: error.code, error: "Application deploy plan is unavailable" });
+      }
       if (error instanceof ApplicationReleaseError || error instanceof ApplicationConfigurationError) {
         return status(error.statusCode, { code: error.code, error: error.message });
+      }
+      if (error instanceof ApplicationRollbackError) {
+        return status(error.statusCode, { code: error.code, error: "Application rollback snapshot is unavailable" });
+      }
+      if (error instanceof ApplicationHistoryError) {
+        return status(error.statusCode, { code: error.code, error: "Application activation history is unavailable" });
       }
       if (error instanceof ApplicationDevelopmentError) {
         return status(error.statusCode, { code: error.code, error: error.message });
@@ -131,6 +168,16 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
     }, async ({ params: values }) => ({
       project_ref: values.ref, application_id: values.id, environment_id: values.environmentId,
       configuration: await configurations.read(scope(values)),
+    }))
+    .get("/:id/environments/:environmentId/deploy-plan", {
+      params: environmentParams,
+      query: t.Object({
+        release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+        configuration_id: ApplicationConfigurationIdSchema,
+      }),
+      detail: { tags: ["applications"], summary: "Compare a stored candidate with verified active state without runtime effects" },
+    }, ({ params: values, query }) => deployPlans.read({
+      ...scope(values), releaseId: query.release_id, configurationId: query.configuration_id,
     }))
     .get("/:id/environments/:environmentId/configurations/:configurationId", {
       params: t.Object({ ...environmentParams.properties, configurationId: ApplicationConfigurationIdSchema }),
@@ -166,6 +213,20 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         readiness: report,
       };
     })
+    .get("/:id/environments/:environmentId/history", {
+      params: environmentParams,
+      query: t.Object({
+        cursor: t.Optional(ApplicationActivationHistoryCursorSchema),
+        limit: t.Optional(t.Numeric({ minimum: 1, maximum: 100, multipleOf: 1 })),
+      }),
+      response: { 200: ApplicationActivationHistorySchema },
+      detail: { tags: ["applications"], summary: "Read successful activation journal history without inspecting artifacts" },
+    }, ({ params: values, query }) => history.read(scope(values), query))
+    .get("/:id/environments/:environmentId/rollback-snapshot", {
+      params: environmentParams,
+      response: { 200: ApplicationRollbackSnapshotSchema },
+      detail: { tags: ["applications"], summary: "Observe the journal-verified previous activation and current rollback CAS" },
+    }, ({ params: values }) => rollback.read(scope(values)))
     .get("/:id/environments/:environmentId/deployment-evidence", {
       params: environmentParams,
       detail: { tags: ["applications"], summary: "Read the last validated single-node deployment evidence" },
@@ -231,6 +292,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         branch_ref: t.String({ pattern: "^[A-Za-z0-9_-]{1,20}$" }),
         data_mode: t.Optional(t.Union([t.Literal("schema_only"), t.Literal("full_clone")])),
         configuration_id: t.Optional(t.String({ format: "uuid" })),
+        ttl_seconds: t.Optional(t.Integer({ minimum: APPLICATION_PREVIEW_MIN_TTL_SECONDS, maximum: APPLICATION_PREVIEW_MAX_TTL_SECONDS })),
       }),
       detail: { tags: ["applications"], summary: "Build a read-only isolated application preview plan" },
     }, async ({ params: values, query }) => {
@@ -243,6 +305,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         releaseId: release.release_id,
         branchRef: query.branch_ref,
         dataMode: query.data_mode ?? "schema_only",
+        ...(query.ttl_seconds === undefined ? {} : { expiresAt: new Date(Date.now() + query.ttl_seconds * 1000).toISOString() }),
       });
     })
     .get("/:id/environments/:environmentId/previews", {
@@ -261,6 +324,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         branch_name: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
         data_mode: t.Optional(t.Union([t.Literal("schema_only"), t.Literal("full_clone")])),
         configuration_id: t.Optional(t.String({ format: "uuid" })),
+        ttl_seconds: t.Optional(t.Integer({ minimum: APPLICATION_PREVIEW_MIN_TTL_SECONDS, maximum: APPLICATION_PREVIEW_MAX_TTL_SECONDS })),
       }),
       detail: { tags: ["applications"], summary: "Provision an isolated application preview" },
     }, async ({ params: values, body }) => {
@@ -272,6 +336,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         ...(body.branch_name === undefined ? {} : { branchName: body.branch_name }),
         ...(body.data_mode === undefined ? {} : { dataMode: body.data_mode }),
         ...(body.configuration_id === undefined ? {} : { configurationId: body.configuration_id }),
+        ...(body.ttl_seconds === undefined ? {} : { ttlSeconds: body.ttl_seconds }),
       });
       return status(202, receipt);
     })
@@ -279,17 +344,17 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
       params: t.Object({ ...environmentParams.properties, previewId: t.String({ pattern: "^[a-f0-9-]{8,64}$" }) }),
       detail: { tags: ["applications"], summary: "Read an application preview receipt" },
     }, async ({ params: values }) => {
-      const receipt = await previews.get(values.ref, values.previewId);
+      const receipt = await previews.read(values.ref, values.previewId);
       if (!receipt || receipt.application_id !== values.id || receipt.environment_id !== values.environmentId) {
         return status(404, { code: "APPLICATION_PREVIEW_NOT_FOUND", error: "Application preview not found" });
       }
-      return receipt;
+      return await previews.get(values.ref, values.previewId);
     })
     .delete("/:id/environments/:environmentId/previews/:previewId", {
       params: t.Object({ ...environmentParams.properties, previewId: t.String({ pattern: "^[a-f0-9-]{8,64}$" }) }),
       detail: { tags: ["applications"], summary: "Clean up an application preview" },
     }, async ({ params: values }) => {
-      const receipt = await previews.get(values.ref, values.previewId);
+      const receipt = await previews.read(values.ref, values.previewId);
       if (!receipt || receipt.application_id !== values.id || receipt.environment_id !== values.environmentId) {
         return status(404, { code: "APPLICATION_PREVIEW_NOT_FOUND", error: "Application preview not found" });
       }
@@ -336,6 +401,37 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         evidence: await evidence.write(observed),
       };
     })
+    .get("/:id/release-transfer-plan", {
+      params,
+      response: { 200: ApplicationReleaseTransferPlanSchema },
+      query: t.Object({
+        source_ref: params.properties.ref,
+        source_release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+      }, { additionalProperties: false }),
+      beforeHandle: ({ params: values, query, request }) =>
+        sourceAccess(request, query.source_ref, values.id, query.source_release_id),
+      detail: { tags: ["applications"], summary: "Compare a verified source artifact with target inventory without copying or activating" },
+    }, ({ params: values, query }) =>
+      transfers.readPlan({
+        projectRef: values.ref, applicationId: values.id,
+        sourceProjectRef: query.source_ref, sourceReleaseId: query.source_release_id,
+      }))
+    .post("/:id/release-transfers", {
+      params,
+      response: { 200: ApplicationReleaseTransferResultSchema },
+      body: t.Object({
+        source_ref: params.properties.ref,
+        source_release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+        expected_manifest_sha256: t.String({ pattern: "^[a-f0-9]{64}$" }),
+      }, { additionalProperties: false }),
+      beforeHandle: ({ params: values, body, request }) =>
+        sourceAccess(request, body.source_ref, values.id, body.source_release_id),
+      detail: { tags: ["applications"], summary: "Materialize a verified artifact in the target project without build, configuration copying or activation" },
+    }, ({ params: values, body }) =>
+      transfers.transfer({
+        projectRef: values.ref, applicationId: values.id, sourceProjectRef: body.source_ref,
+        sourceReleaseId: body.source_release_id, expectedManifestSha256: body.expected_manifest_sha256,
+      }))
     .get("/:id/releases", {
       params,
       query: t.Object({

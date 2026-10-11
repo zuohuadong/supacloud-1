@@ -2,6 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { ApplicationActivationHistorySchema, parseApplicationActivationHistory } from "@supacloud/delivery";
+import { parseApplicationDeployPlan } from "@supacloud/delivery";
+import { parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult } from "@supacloud/delivery";
 import {
     applyDiagnosticFix,
     buildDeliveryProject,
@@ -26,6 +30,7 @@ import { buildToolDefinitions, type AppManifest } from "./app-tool-export";
 import { initializeAppProject } from "./app-starter";
 import { checkAppDatabaseSources } from "./app-database-check";
 import { APPLICATION_TOOL_SCHEMA } from "./application-tools";
+import { RELEASE_CONTROL_RESPONSE_SCHEMA, releaseControlFailure } from "./release-control-response";
 import { resourceScaffold } from "./app-resource";
 import { runLocalDevelopment } from "./app-local-dev";
 import { createVerificationPlan } from "./app-verification-plan";
@@ -33,13 +38,24 @@ import { applyScaffoldWrites, planScaffoldWrites, scaffoldPath, ScaffoldError, t
 
 const REMOTE_APP_ACTIONS = {
     upload: "upload_release",
+    "transfer-plan": "get_release_transfer_plan",
+    transfer: "transfer_release",
     configure: "put_configuration",
-    deploy: "activate_release",
+    deploy: "deploy_release",
+    "deploy-plan": "get_deploy_plan",
+    diff: "get_deploy_plan",
     status: "get_runtime",
-    rollback: "activate_release",
+    rollback: "rollback_release",
+    "rollback-plan": "get_rollback_snapshot",
+    history: "get_history",
     reconcile: "reconcile_activation",
     retire: "retire_activation",
     logs: "logs",
+    "preview-plan": "get_preview_plan",
+    preview: "create_preview",
+    previews: "list_previews",
+    "preview-status": "get_preview",
+    "preview-cleanup": "cleanup_preview",
 } as const;
 
 export interface AppToolOptions {
@@ -52,15 +68,26 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/deploy/status/rollback/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/status/rollback/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/rollback] Required immutable configuration revision",
-    activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID",
-    expected_activation_id: "[deploy/rollback] Required current activation ID, or absent for first activation",
+    ref: "[upload/configure/transfer-plan/transfer/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Project ref (defaults to context)",
+    id: "[upload/configure/transfer-plan/transfer/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Application ID",
+    environment_id: "[configure/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Environment ID",
+    configuration_id: "[deploy/deploy-plan/diff/rollback/preview] Required for deployment/preview; platform selects for default rollback",
+    activation_id: "[deploy/rollback/reconcile/retire] Stable activation ID; auto-generated for deploy/rollback if omitted",
+    expected_activation_id: "[deploy/rollback] Auto-selected from verified state; supply with activation_id for an exact retry",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
-    release_id: "[deploy/rollback/reconcile] Required immutable application release ID",
+    release_id: "[deploy/deploy-plan/diff/rollback/reconcile/preview-plan/preview] Required for deployment/preview; defaults to journal-selected previous for rollback",
+    source_ref: "[transfer-plan/transfer] Source project ref",
+    source_release_id: "[transfer-plan/transfer] Source immutable release ID",
+    preview_id: "[preview-status/preview-cleanup] Preview receipt ID",
+    branch_ref: "[preview-plan] Proposed branch ref; preview assigns its own",
+    branch_name: "[preview] Branch display name",
+    data_mode: "[preview-plan/preview] Default schema_only; full_clone copies rows",
+    ttl_seconds: "[preview-plan/preview] Lifetime from 300 to 604800 seconds; creation defaults to the platform TTL",
+    wait: "[preview/preview-status] Wait for verified readiness of the selected preview",
+    timeout_seconds: "[preview/preview-status] Observation budget with --wait, from 1 to 3600 seconds (default 300)",
+    cursor: "[history] Returned page cursor",
+    limit: "[history] Page size, default 20 (1-100)",
 };
 
 const { action: _remoteAction, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
@@ -82,6 +109,17 @@ export interface AppToolArguments {
     configuration_path?: string;
     manifest_path?: string;
     release_id?: string;
+    source_ref?: string;
+    source_release_id?: string;
+    cursor?: string;
+    limit?: number;
+    preview_id?: string;
+    branch_ref?: string;
+    branch_name?: string;
+    data_mode?: "schema_only" | "full_clone";
+    ttl_seconds?: number;
+    wait?: boolean;
+    timeout_seconds?: number;
     kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource";
     template?: "minimal" | "http" | "command" | "edge";
     name?: string;
@@ -97,6 +135,7 @@ export interface AppToolArguments {
     out_dir?: string;
     strict?: boolean;
     format?: "text" | "json";
+    json?: boolean;
     target?: string;
     fix?: string;
     write?: boolean;
@@ -1063,6 +1102,86 @@ async function runDelivery(args: AppToolArguments): Promise<ToolResult> {
     return textResult(JSON.stringify(result, null, 2), !result.ok);
 }
 
+function formatReleaseTransfer(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("ok" in payload) || payload.ok !== true) return result;
+        const plan = "plan" in payload ? parseApplicationReleaseTransferPlan(payload.plan) : null;
+        const receipt = !plan && "transfer" in payload ? parseApplicationReleaseTransferResult(payload.transfer) : null;
+        const data = plan ?? receipt;
+        if (!data) return result;
+        return textResult([
+            `${data.project_ref}/${data.application_id}: ${plan ? plan.action === "no-op" ? "No changes" : "Transfer required" : "Artifact transferred"}`,
+            `Source: ${data.source.project_ref} / ${data.source.release_id}`,
+            `Target release: ${data.candidate_release_id}`,
+            `Manifest: ${data.source.manifest_sha256}`,
+            "Activation: not performed",
+        ].join("\n"));
+    } catch { return result; }
+}
+const historyReceiptSchema = Type.Object({
+    schema: Type.Literal(RELEASE_CONTROL_RESPONSE_SCHEMA),
+    ok: Type.Literal(true),
+    operation: Type.Literal("applications.get_history"),
+    project_ref: Type.String(), application_id: Type.String(), environment_id: Type.String(),
+    history: ApplicationActivationHistorySchema,
+}, { additionalProperties: false });
+
+function historyText(result: ToolResult, request: AppToolArguments, projectRef: string | undefined): ToolResult {
+    if (result.isError) return result;
+    try {
+        if (result.content.length !== 1 || result.content[0]!.text.length > 262_144) throw new Error();
+        const receipt: unknown = JSON.parse(result.content[0]!.text);
+        if (!Value.Check(historyReceiptSchema, receipt)) throw new Error();
+        const history = parseApplicationActivationHistory(receipt.history);
+        if (history.project_ref !== projectRef || history.application_id !== request.id
+            || history.environment_id !== request.environment_id
+            || receipt.project_ref !== history.project_ref || receipt.application_id !== history.application_id
+            || receipt.environment_id !== history.environment_id) throw new Error();
+        const lines = [
+            `Activation History: ${history.project_ref}/${history.application_id}/${history.environment_id}`,
+            `Active activation: ${history.active_activation_id ?? "none"}`,
+            "",
+        ];
+        if (history.activations.length === 0) lines.push("No successful activations on this page.");
+        else {
+            lines.push(`${"Completed (UTC)".padEnd(29)}  ${"State".padEnd(7)}  ${"Activation ID".padEnd(36)}  Release (12)`);
+            for (const entry of history.activations) lines.push(
+                `${entry.completed_at.padEnd(29)}  ${(entry.is_active ? "current" : "-").padEnd(7)}  ${entry.activation_id}  ${entry.release_id.slice(0, 12)}`,
+            );
+        }
+        if (history.next_cursor) lines.push("", `Next cursor: ${history.next_cursor}`);
+        return textResult(lines.join("\n"));
+    } catch {
+        return releaseControlFailure("applications.get_history", "INVALID_RESPONSE", null);
+    }
+}
+
+function formatRemoteDeployPlan(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("ok" in payload) || payload.ok !== true
+            || !("plan" in payload)) return result;
+        const plan = parseApplicationDeployPlan(payload.plan);
+        const names = (values: string[], prefix: string) => values.map(name => `${prefix}${name}`);
+        const targets = [
+            ...names(plan.changes.targets.added, "+"), ...names(plan.changes.targets.removed, "-"),
+            ...names(plan.changes.targets.changed, "~"),
+        ];
+        return textResult([
+            `${plan.project_ref}/${plan.application_id} [${plan.environment_id}]: ${plan.action === "no-op" ? "No changes" : "Activation required"}`,
+            `Release: ${plan.candidate.release_id} (${plan.changes.release ? "changed" : "unchanged"})`,
+            `Configuration: ${plan.candidate.configuration_id} (${plan.changes.configuration ? "changed" : "unchanged"})`,
+            `Targets: ${targets.length ? targets.join(", ") : "unchanged"}`,
+            `Migrations: ${!plan.migrations.ledger_compatible ? "ledger conflict" : plan.migrations.project_migrations_applied ? "applied" : "pending"}`,
+            `Provisioning: ${plan.migrations.operator_provisioning}`,
+            `Expected activation: ${plan.expected_activation_id ?? "absent"}`,
+        ].join("\n"));
+    } catch { return result; }
+}
+
 export async function runAppTool(request: AppToolArguments, options: AppToolOptions = {}): Promise<ToolResult> {
     if ((request.dry_run !== undefined && request["dry-run"] !== undefined)
         || (request.register_in !== undefined && request["register-in"] !== undefined)
@@ -1081,16 +1200,30 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
     if (request.database_url !== undefined && request.action !== "dev" && request.action !== "watch") {
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--database-url applies only to app dev --profile integration");
     }
+    if (request.json !== undefined
+        && request.action !== "history" && request.action !== "transfer-plan" && request.action !== "transfer") {
+        throw new Error("--json applies only to app history, transfer-plan or transfer");
+    }
+    if (request.json !== undefined && request.format === "text") throw new Error("--json and --format text cannot be combined");
     if (Object.hasOwn(REMOTE_APP_ACTIONS, request.action)) {
         const delegate = options.getApplications?.();
         if (!delegate) return textResult("App remote actions require a Management API context.", true);
         const action = REMOTE_APP_ACTIONS[request.action as keyof typeof REMOTE_APP_ACTIONS];
+        const { format, json, ...remoteRequest } = request;
         const args = {
-            ...request, action, ref: request.ref ?? options.projectRef,
+            ...remoteRequest, action, ref: request.ref ?? options.projectRef,
         };
         validateToolArguments(APPLICATION_TOOL_SCHEMA, args);
+        const result = await delegate(args);
+        if (request.action === "history" && format !== "json" && json !== true) {
+            return historyText(result, request, args.ref);
+        }
+        if ((request.action === "deploy-plan" || request.action === "diff") && format !== "json") {
+            return formatRemoteDeployPlan(result);
+        }
         // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
-        return delegate(args);
+        return (request.action === "transfer-plan" || request.action === "transfer") && format !== "json" && !json
+            ? formatReleaseTransfer(result) : result;
     }
     switch (request.action) {
         case "verify-plan": {
@@ -1136,7 +1269,8 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "deploy", "status", "rollback", "reconcile", "retire", "logs"]), "App action; upload/configure only prepare, rollback activates an explicit old release without schema downgrade"),
+                "plan", "build", "upload", "configure", "transfer-plan", "transfer", "deploy", "deploy-plan", "diff", "status", "rollback", "rollback-plan", "history", "reconcile", "retire", "logs",
+                "preview-plan", "preview", "previews", "preview-status", "preview-cleanup"]), "App action; transfer reuses a verified release without build or activation; local plan is topology-only, deploy-plan/diff observe remote state, deploy skips verified no-op, rollback never downgrades schema"),
             kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
             template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
             name: optional(Type.String(), "[init/generate] Project or object name"),
@@ -1151,7 +1285,8 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             include: optional(Type.String(), "[dev/compile/check] Comma-separated glob patterns for source files"),
             out_dir: optional(Type.String(), "[dev/compile/plan/build/export-tools] Output directory (default: configured outDir)"),
             strict: optional(Type.Boolean(), "[dev/compile/check] Promote warnings to errors"),
-            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/graph/export-tools] Output format (default: text)"),
+            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/deploy-plan/diff/history/graph/export-tools] Output format (default: text)"),
+            json: optional(Type.Boolean(), "[history/transfer-plan/transfer] Preserve or return the full machine-readable receipt"),
             profile: optional(stringEnum(["fast", "integration"]), "[dev] Run dev or dev:integration; integration verifies an explicit loopback database"),
             once: optional(Type.Boolean(), "[dev] Validate and report once without watching"),
             watch: optional(Type.Boolean(), "[dev] Watch for changes (default: true; --once disables)"),

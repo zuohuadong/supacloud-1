@@ -8,7 +8,10 @@ import {
   type ApplicationPromotionPlan, type ApplicationPromotionPlanContent, type ApplicationConfigurationView,
 } from "@supacloud/delivery";
 import {
-  applicationActivationMutations, parseSuccessfulApplicationActivation, parseApplicationActiveRecord,
+  applicationActivationMutations, parseSuccessfulApplicationActivation, hasApplicationActivationSuccessReceipt,
+  hasApplicationPromotionActivationReceipt,
+  hasApplicationPromotionActivationCheckpoint,
+  parseApplicationActiveRecord,
   type ApplicationActiveRecord, type ApplicationActivationMutations,
 } from "./application-activation";
 import { ApplicationActiveStorage } from "./application-active-storage";
@@ -19,14 +22,17 @@ import { ApplicationReadiness } from "./application-readiness";
 import { ApplicationReleaseStorage } from "./application-release-storage";
 import { ApplicationReleaseTransfers } from "./application-release-transfer";
 import { applicationRuntimePlan } from "./application-runtime";
-import { readActiveProjectMutationForResource } from "./project-mutation.service";
+import { readActiveProjectMutationForResource, type ProjectMutationState } from "./project-mutation.service";
+import { parseApplicationPromotionCheckpoint } from "./application-promotion-operation";
 import { stableSha256, stableStringify } from "../utils/stable-json";
 import {
   assertApplicationPromotionOwner, ApplicationPromotionOwnershipError,
+  assertApplicationPromotionReconciliation,
   type ApplicationPromotionOwner, type ApplicationPromotionScope,
 } from "./application-promotion-ownership";
 
 const SMOKE_MAX_AGE_MS = 30 * 60 * 1000;
+
 export interface ApplicationPromotionInput {
   projectRef: string;
   applicationId: string;
@@ -50,6 +56,7 @@ export interface ApplicationPromotionDependencies {
   mutations: Pick<ApplicationActivationMutations, "read">;
   assertIdle?: (scope: ApplicationPromotionScope) => Promise<void>;
   assertOwned?: (scope: ApplicationPromotionScope, owner: ApplicationPromotionOwner) => Promise<void>;
+  assertReconciling?: (scope: ApplicationPromotionScope, state: ProjectMutationState) => Promise<void>;
   now?: () => number;
 }
 
@@ -80,8 +87,24 @@ export class ApplicationPromotions {
     return this.readValidatedPlan(request, structuredClone(owner));
   }
 
+  async readReconciliationPlan(
+    request: ApplicationPromotionInput, state: ProjectMutationState,
+  ): Promise<ApplicationPromotionPlan> {
+    const expected = structuredClone(state);
+    const checkpoint = parseApplicationPromotionCheckpoint(expected);
+    if (expected.status !== "outcome_unknown" || checkpoint.plan.project_ref !== request.projectRef
+      || checkpoint.plan.application_id !== request.applicationId || checkpoint.plan.environment_id !== request.environmentId
+      || checkpoint.request.source_ref !== request.sourceProjectRef
+      || checkpoint.request.source_environment_id !== request.sourceEnvironmentId
+      || checkpoint.request.source_release_id !== request.sourceReleaseId
+      || checkpoint.request.configuration_id !== request.configurationId) {
+      throw new ApplicationPromotionError("APPLICATION_PROMOTION_RECONCILIATION_REQUIRED", 503);
+    }
+    return this.readValidatedPlan(request, undefined, expected);
+  }
+
   private async readValidatedPlan(
-    request: ApplicationPromotionInput, owner?: ApplicationPromotionOwner,
+    request: ApplicationPromotionInput, owner?: ApplicationPromotionOwner, reconciling?: ProjectMutationState,
   ): Promise<ApplicationPromotionPlan> {
     const input = structuredClone(request);
     if (![input.projectRef, input.sourceProjectRef].every(ref => /^[a-z0-9-]{1,20}$/.test(ref))
@@ -90,7 +113,7 @@ export class ApplicationPromotions {
       || input.configurationId !== undefined && !Value.Check(ApplicationConfigurationIdSchema, input.configurationId)) {
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_IDENTITY_INVALID", 400);
     }
-    try { return await this.observe(input, owner); }
+    try { return await this.observe(input, owner, reconciling); }
     catch (error) {
       if (error instanceof ApplicationPromotionError) throw error;
       if (error instanceof ApplicationPromotionOwnershipError) {
@@ -100,7 +123,9 @@ export class ApplicationPromotions {
     }
   }
 
-  private async assertEnvironmentsIdle(input: ApplicationPromotionInput, owner?: ApplicationPromotionOwner): Promise<void> {
+  private async assertEnvironmentsIdle(
+    input: ApplicationPromotionInput, owner?: ApplicationPromotionOwner, reconciling?: ProjectMutationState,
+  ): Promise<void> {
     await this.assertIdle({
       projectRef: input.sourceProjectRef, applicationId: input.applicationId, environmentId: input.sourceEnvironmentId,
     });
@@ -108,6 +133,9 @@ export class ApplicationPromotions {
       projectRef: input.projectRef, applicationId: input.applicationId, environmentId: input.environmentId,
     };
     if (owner) await this.assertOwned(target, structuredClone(owner));
+    else if (reconciling) await (this.dependencies.assertReconciling ?? assertApplicationPromotionReconciliation)(
+      target, structuredClone(reconciling),
+    );
     else await this.assertIdle(target);
   }
 
@@ -130,7 +158,9 @@ export class ApplicationPromotions {
     return structuredClone(view);
   }
 
-  private async runtimeObservation(record: ApplicationActiveRecord | null) {
+  private async runtimeObservation(
+    record: ApplicationActiveRecord | null, owner?: ApplicationPromotionOwner, reconciling?: ProjectMutationState,
+  ) {
     if (!record) return {
       activation_id: null, receipt_confirmed: false, ready: false, smoke_verified: false, evidence_sha256: null,
       migration_ledger_digest: null,
@@ -148,6 +178,8 @@ export class ApplicationPromotions {
     } catch {
       // Invalid journal evidence blocks this observation without exposing it.
     }
+    const promotionReceipt = record.promotionMutationId === undefined ? null
+      : await this.dependencies.mutations.read(release.project_ref, record.promotionMutationId);
     const report = parseApplicationReadinessReport(await this.dependencies.readiness.inspect(runtime));
     const runtimePlan = applicationRuntimePlan(runtime);
     if (report.project_ref !== release.project_ref || report.application_id !== release.application_id
@@ -174,7 +206,15 @@ export class ApplicationPromotions {
       && fresh(evidence.recorded_at) && fresh(evidence.health.checked_at);
     return {
       activation_id: runtime.activationId,
-      receipt_confirmed: receiptConfirmed,
+      receipt_confirmed: receiptConfirmed
+        || receipt !== null && hasApplicationActivationSuccessReceipt(receipt, record)
+        || promotionReceipt !== null && hasApplicationPromotionActivationReceipt(
+          promotionReceipt, record, owner !== undefined && promotionReceipt.mutationId === owner.lease.mutationId
+            && promotionReceipt.fencingEpoch === owner.lease.fencingEpoch
+            && promotionReceipt.requestFingerprint === owner.requestFingerprint,
+        ) || promotionReceipt !== null && reconciling !== undefined
+          && stableStringify(promotionReceipt) === stableStringify(reconciling)
+          && hasApplicationPromotionActivationCheckpoint(promotionReceipt, record),
       ready: report.ready,
       smoke_verified: smoke,
       evidence_sha256: evidence === null ? null : stableSha256(evidence),
@@ -182,10 +222,12 @@ export class ApplicationPromotions {
     };
   }
 
-  private async observe(input: ApplicationPromotionInput, owner?: ApplicationPromotionOwner): Promise<ApplicationPromotionPlan> {
+  private async observe(
+    input: ApplicationPromotionInput, owner?: ApplicationPromotionOwner, reconciling?: ProjectMutationState,
+  ): Promise<ApplicationPromotionPlan> {
     // An unchanged old authority is not evidence of an idle environment: a
     // new activation/deactivation may already be pending in the durable journal.
-    await this.assertEnvironmentsIdle(input, owner);
+    await this.assertEnvironmentsIdle(input, owner, reconciling);
     const transfer = parseApplicationReleaseTransferPlan(await this.dependencies.transfers.readPlan({
       projectRef: input.projectRef, applicationId: input.applicationId,
       sourceProjectRef: input.sourceProjectRef, sourceReleaseId: input.sourceReleaseId,
@@ -202,7 +244,7 @@ export class ApplicationPromotions {
     const target = await this.readActive(input.projectRef, input.applicationId, input.environmentId);
     const configuration = await this.configuration(input);
     const sourceObservation = await this.runtimeObservation(source);
-    const targetObservation = await this.runtimeObservation(target);
+    const targetObservation = await this.runtimeObservation(target, owner, reconciling);
     const sourceMigrations = await this.dependencies.migrations.inspectArchives(
       input.sourceProjectRef, input.applicationId, release, archives,
     );
@@ -267,7 +309,7 @@ export class ApplicationPromotions {
     };
     content.action = applicationPromotionAction(content);
     content.steps = applicationPromotionSteps(content);
-    await this.assertEnvironmentsIdle(input, owner);
+    await this.assertEnvironmentsIdle(input, owner, reconciling);
     const sourceReadback = await this.dependencies.migrations.inspectArchives(
       input.sourceProjectRef, input.applicationId, release, archives,
     );
@@ -285,10 +327,10 @@ export class ApplicationPromotions {
       input.projectRef, input.applicationId, input.environmentId,
     )) || stableStringify(configuration) !== stableStringify(await this.configuration(input))
       || stableStringify(sourceObservation) !== stableStringify(await this.runtimeObservation(source))
-      || stableStringify(targetObservation) !== stableStringify(await this.runtimeObservation(target))) {
+      || stableStringify(targetObservation) !== stableStringify(await this.runtimeObservation(target, owner, reconciling))) {
       throw new ApplicationPromotionError("APPLICATION_PROMOTION_OBSERVATION_CHANGED", 409);
     }
-    await this.assertEnvironmentsIdle(input, owner);
+    await this.assertEnvironmentsIdle(input, owner, reconciling);
     return parseApplicationPromotionPlan({ ...content, plan_sha256: applicationPromotionPlanDigest(content) });
   }
 }

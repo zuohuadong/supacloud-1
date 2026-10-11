@@ -4,13 +4,29 @@ import { stableSha256, stableStringify } from "../utils/stable-json";
 import {
   projectMutationResourceKey, readActiveProjectMutationForResource, readProjectMutation,
   withProjectMutationLease,
-  type MutationLeaseInput, type MutationPrincipal,
+  type MutationLeaseInput, type MutationPrincipal, type ProjectMutationState,
 } from "./project-mutation.service";
 
 export interface ApplicationPromotionScope {
   projectRef: string;
   applicationId: string;
   environmentId: string;
+}
+
+/** 未知操作仍阻塞资源；只读恢复观察必须匹配当前完整 journal 和 epoch。 */
+export async function assertApplicationPromotionReconciliation(
+  scope: ApplicationPromotionScope, expected: ProjectMutationState, database: SQL = sql,
+): Promise<void> {
+  try {
+    const current = await readActiveProjectMutationForResource(scope.projectRef, {
+      type: "application_release",
+      id: stableSha256({ applicationId: scope.applicationId, environmentId: scope.environmentId }),
+    }, database);
+    if (!current || expected.status !== "outcome_unknown" || current.operation !== "application.release.promote"
+      || current.projectRef !== scope.projectRef || stableStringify(current) !== stableStringify(expected)) {
+      throw new ApplicationPromotionOwnershipError();
+    }
+  } catch { throw new ApplicationPromotionOwnershipError(); }
 }
 
 export interface ApplicationPromotionOwner {

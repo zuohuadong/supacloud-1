@@ -22,7 +22,9 @@ import { ApplicationDeploymentEvidenceObserver } from "../services/application-d
 import { victoriaLogsService } from "../services/victorialogs.service";
 import { applicationRuntimePlan } from "../services/application-runtime";
 import { buildApplicationPreviewReceipt } from "../services/application-preview-contract";
-import { ApplicationPreviewService } from "../services/application-preview.service";
+import {
+  ApplicationPreviewService, APPLICATION_PREVIEW_MIN_TTL_SECONDS, APPLICATION_PREVIEW_MAX_TTL_SECONDS,
+} from "../services/application-preview.service";
 import { ApplicationRollbackError, ApplicationRollbackSnapshots } from "../services/application-rollback";
 
 function activationFailure(error: unknown, identity: {
@@ -242,6 +244,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         branch_ref: t.String({ pattern: "^[A-Za-z0-9_-]{1,20}$" }),
         data_mode: t.Optional(t.Union([t.Literal("schema_only"), t.Literal("full_clone")])),
         configuration_id: t.Optional(t.String({ format: "uuid" })),
+        ttl_seconds: t.Optional(t.Integer({ minimum: APPLICATION_PREVIEW_MIN_TTL_SECONDS, maximum: APPLICATION_PREVIEW_MAX_TTL_SECONDS })),
       }),
       detail: { tags: ["applications"], summary: "Build a read-only isolated application preview plan" },
     }, async ({ params: values, query }) => {
@@ -254,6 +257,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         releaseId: release.release_id,
         branchRef: query.branch_ref,
         dataMode: query.data_mode ?? "schema_only",
+        ...(query.ttl_seconds === undefined ? {} : { expiresAt: new Date(Date.now() + query.ttl_seconds * 1000).toISOString() }),
       });
     })
     .get("/:id/environments/:environmentId/previews", {
@@ -272,6 +276,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         branch_name: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
         data_mode: t.Optional(t.Union([t.Literal("schema_only"), t.Literal("full_clone")])),
         configuration_id: t.Optional(t.String({ format: "uuid" })),
+        ttl_seconds: t.Optional(t.Integer({ minimum: APPLICATION_PREVIEW_MIN_TTL_SECONDS, maximum: APPLICATION_PREVIEW_MAX_TTL_SECONDS })),
       }),
       detail: { tags: ["applications"], summary: "Provision an isolated application preview" },
     }, async ({ params: values, body }) => {
@@ -283,6 +288,7 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         ...(body.branch_name === undefined ? {} : { branchName: body.branch_name }),
         ...(body.data_mode === undefined ? {} : { dataMode: body.data_mode }),
         ...(body.configuration_id === undefined ? {} : { configurationId: body.configuration_id }),
+        ...(body.ttl_seconds === undefined ? {} : { ttlSeconds: body.ttl_seconds }),
       });
       return status(202, receipt);
     })
@@ -290,17 +296,17 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
       params: t.Object({ ...environmentParams.properties, previewId: t.String({ pattern: "^[a-f0-9-]{8,64}$" }) }),
       detail: { tags: ["applications"], summary: "Read an application preview receipt" },
     }, async ({ params: values }) => {
-      const receipt = await previews.get(values.ref, values.previewId);
+      const receipt = await previews.read(values.ref, values.previewId);
       if (!receipt || receipt.application_id !== values.id || receipt.environment_id !== values.environmentId) {
         return status(404, { code: "APPLICATION_PREVIEW_NOT_FOUND", error: "Application preview not found" });
       }
-      return receipt;
+      return await previews.get(values.ref, values.previewId);
     })
     .delete("/:id/environments/:environmentId/previews/:previewId", {
       params: t.Object({ ...environmentParams.properties, previewId: t.String({ pattern: "^[a-f0-9-]{8,64}$" }) }),
       detail: { tags: ["applications"], summary: "Clean up an application preview" },
     }, async ({ params: values }) => {
-      const receipt = await previews.get(values.ref, values.previewId);
+      const receipt = await previews.read(values.ref, values.previewId);
       if (!receipt || receipt.application_id !== values.id || receipt.environment_id !== values.environmentId) {
         return status(404, { code: "APPLICATION_PREVIEW_NOT_FOUND", error: "Application preview not found" });
       }

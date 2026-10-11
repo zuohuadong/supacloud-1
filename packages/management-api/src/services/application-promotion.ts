@@ -8,7 +8,7 @@ import {
   type ApplicationPromotionPlan, type ApplicationPromotionPlanContent, type ApplicationConfigurationView,
 } from "@supacloud/delivery";
 import {
-  applicationActivationMutations, parseSuccessfulApplicationActivation, hasApplicationActivationSuccessReceipt,
+  applicationActivationMutations, parseSuccessfulApplicationActivation, hasCanonicalApplicationActivationJournal,
   hasApplicationPromotionActivationReceipt,
   hasApplicationPromotionActivationCheckpoint,
   parseApplicationActiveRecord,
@@ -207,7 +207,7 @@ export class ApplicationPromotions {
     return {
       activation_id: runtime.activationId,
       receipt_confirmed: receiptConfirmed
-        || receipt !== null && hasApplicationActivationSuccessReceipt(receipt, record)
+        || receipt !== null && hasCanonicalApplicationActivationJournal(receipt, record)
         || promotionReceipt !== null && hasApplicationPromotionActivationReceipt(
           promotionReceipt, record, owner !== undefined && promotionReceipt.mutationId === owner.lease.mutationId
             && promotionReceipt.fencingEpoch === owner.lease.fencingEpoch

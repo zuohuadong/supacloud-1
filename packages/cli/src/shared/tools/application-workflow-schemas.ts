@@ -39,6 +39,7 @@ const checks = Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { maxIt
 export const ApplicationPreviewReceiptSchema = Type.Object({
   schema: Type.Literal("supacloud.application-preview.v1"),
   ...scope, preview_id: previewId, release_id: ApplicationReleaseIdSchema,
+  expires_at: Type.Union([timestamp, Type.Null()]),
   status: Type.Union([Type.Literal("planned"), Type.Literal("provisioning"), Type.Literal("ready"),
     Type.Literal("failed"), Type.Literal("cleaned")]),
   resources: Type.Object({

@@ -241,6 +241,21 @@ export function hasApplicationActivationSuccessReceipt(state: ProjectMutationSta
   } });
 }
 
+export function hasCanonicalApplicationActivationJournal(
+  state: ProjectMutationState, desired: ApplicationActiveRecord,
+): boolean {
+  if (!hasApplicationActivationSuccessReceipt(state, desired)) return false;
+  try {
+    const checkpoint = parseCheckpoint(state.checkpoint, desired);
+    return ["routed", "committed"].includes(checkpoint.phase)
+      && state.requestFingerprint === stableSha256({
+        desired, expectedActivationId: checkpoint.previous?.runtime.activationId ?? null,
+      });
+  } catch {
+    return false;
+  }
+}
+
 export function parseSuccessfulApplicationActivation(
   state: ProjectMutationState | null,
   scope: { projectRef: string; applicationId: string; environmentId: string },
@@ -263,10 +278,12 @@ export function parseSuccessfulApplicationActivation(
     || !["routed", "committed"].includes(checkpoint.phase)
     || state.requestFingerprint !== stableSha256({
       desired, expectedActivationId: checkpoint.previous?.runtime.activationId ?? null,
-    }) || !hasSuccessReceipt(state, desired)) {
+    }) || !hasApplicationActivationSuccessReceipt(state, desired)) {
     throw new Error("APPLICATION_ACTIVATION_CHECKPOINT_INVALID");
   }
   return { desired, previous: checkpoint.previous };
+}
+
 /** 只校验委托 journal 与完整 authority 的绑定，不把未知父操作当作成功回执。 */
 export function hasApplicationPromotionActivationCheckpoint(
   state: ProjectMutationState, desired: ApplicationActiveRecord,

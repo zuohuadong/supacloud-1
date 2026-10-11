@@ -451,6 +451,7 @@ function previewReceipt() {
     project_ref: "project", application_id: "reviews", environment_id: "test",
     preview_id: previewId,
     release_id: releaseId, status: "provisioning",
+    expires_at: "2026-10-17T00:00:00.000Z",
     resources: {
       build_artifact: { status: "ready", release_id: releaseId },
       database_branch: { status: "pending", branch_ref: branchRef, data_mode: "schema_only" },
@@ -487,10 +488,17 @@ test("preview controls are scoped and reject secret values", async () => {
   const listed = JSON.parse((await handler({
     action: "list_previews", ref: "project", id: "reviews", environment_id: "test",
   })).content[0]!.text);
-  expect(listed).toMatchObject({ ok: true, previews: [receipt] });
+  expect(listed).toMatchObject({
+    ok: true, previews: [{
+      schema: receipt.schema, project_ref: receipt.project_ref, application_id: receipt.application_id,
+      environment_id: receipt.environment_id, preview_id: receipt.preview_id, release_id: receipt.release_id,
+      expires_at: receipt.expires_at, status: receipt.status, resources: receipt.resources, cleanup: receipt.cleanup,
+    }],
+  });
+  expect(listed.previews[0]).not.toHaveProperty("test_secret_name");
   const created = await handler({
     action: "create_preview", ref: "project", id: "reviews", environment_id: "test",
-    release_id: record().release_id,
+    release_id: record().release_id, configuration_id: configurationView().configuration_id,
   });
   expect(created.isError).toBe(true);
   expect(JSON.parse(created.content[0]!.text)).toMatchObject({ error: { code: "OUTCOME_UNKNOWN" } });
@@ -498,7 +506,8 @@ test("preview controls are scoped and reject secret values", async () => {
   const status = JSON.parse((await handler({
     action: "get_preview", ref: "project", id: "reviews", environment_id: "test", preview_id: previewId,
   })).content[0]!.text);
-  expect(status).toMatchObject({ ok: true, preview: receipt });
+  expect(status).toMatchObject({ ok: true, preview: { preview_id: receipt.preview_id, status: receipt.status } });
+  expect(status.preview).not.toHaveProperty("test_secret_name");
 });
 
 test("preview plan is bounded, read-only and binds the requested branch, data mode and source release", async () => {
@@ -506,13 +515,14 @@ test("preview plan is bounded, read-only and binds the requested branch, data mo
   const release = record();
   const planned = {
     ...current, status: "planned", release_id: release.release_id,
+    expires_at: null,
     resources: { ...current.resources, build_artifact: { status: "ready", release_id: release.release_id } },
   };
   const requests: string[] = [];
   const handler = tool(planned, {
     get: (async (path: string, options: unknown) => {
       requests.push(path);
-      expect(options).toEqual({ maxJsonBytes: 65_536, responseTimeoutMs: 30_000 });
+      expect(options).toMatchObject({ maxJsonBytes: 1_048_576, responseTimeoutMs: 120_000, retry: false, timeoutMs: 120_000 });
       return { ok: true, status: 200, data: planned };
     }) as HttpTransport["get"],
   });
@@ -524,9 +534,9 @@ test("preview plan is bounded, read-only and binds the requested branch, data mo
   expect(output).toMatchObject({ ok: true, preview: { status: "planned" } });
   expect(requests).toHaveLength(1);
   expect(requests[0]).toContain(`/preview-plan?release_id=${release.release_id}&branch_ref=`);
-  await expect(handler({ ...args, configuration_id: configurationView().configuration_id }))
-    .rejects.toThrow("configuration_id applies to preview-create");
-  expect(requests).toHaveLength(1);
+  const configured = JSON.parse((await handler({ ...args, configuration_id: configurationView().configuration_id })).content[0]!.text);
+  expect(configured).toMatchObject({ ok: true, preview: { status: "planned" } });
+  expect(requests).toHaveLength(2);
 });
 
 test.each(["success", "foreign", "artifact", "branch", "private", "mode", "configuration"] as const)(
@@ -542,7 +552,9 @@ test.each(["success", "foreign", "artifact", "branch", "private", "mode", "confi
       post: (async (path: string, body: unknown) => {
         requests.push("POST");
         expect(path).toBe("/v1/projects/project/applications/reviews/environments/test/previews");
-        expect(body).toEqual({ release_id: record().release_id, configuration_id: configurationView().configuration_id });
+        expect(body).toEqual({
+          release_id: record().release_id, configuration_id: configurationView().configuration_id, data_mode: "schema_only",
+        });
         const response = {
           ...receipt, source_configuration_id: configurationView().configuration_id,
           ...(fault === "foreign" ? { environment_id: "foreign" } : {}),
@@ -567,7 +579,7 @@ test.each(["success", "foreign", "artifact", "branch", "private", "mode", "confi
     expect(requests).toEqual(["GET", "POST"]);
     expect(output.content[0]!.text).not.toContain("private-marker");
     if (fault === "success") {
-      expect(output.isError).toBe(false);
+      expect(Boolean(output.isError)).toBe(false);
       expect(output.content[0]!.text).toContain("project/reviews/test: provisioning");
       expect(output.content[0]!.text).not.toContain('"schema"');
     } else {
@@ -588,6 +600,13 @@ test("preview cleanup sends one bounded delete and never reports failed cleanup 
         expect(body).toBeUndefined();
         return { ok: true, status: 200, data: {
           ...receipt, status: failed ? "failed" : "cleaned",
+          resources: failed ? receipt.resources : {
+            ...receipt.resources,
+            database_branch: { ...receipt.resources.database_branch, status: "cleaned" },
+            queue_namespace: { ...receipt.resources.queue_namespace, status: "cleaned" },
+            storage_namespace: { ...receipt.resources.storage_namespace, status: "cleaned" },
+            test_secret: { ...receipt.resources.test_secret, status: "cleaned" },
+          },
           cleanup: failed ? { required: true, completed: false, error: "APPLICATION_PREVIEW_CLEANUP_FAILED" }
             : { required: false, completed: true, error: null },
         } };
@@ -599,7 +618,7 @@ test("preview cleanup sends one bounded delete and never reports failed cleanup 
     expect(deletes).toBe(1);
     expect(Boolean(output.isError)).toBe(failed);
     if (failed) expect(JSON.parse(output.content[0]!.text)).toMatchObject({
-      error: { code: "MUTATION_NOT_SUCCEEDED" }, preview_id: receipt.preview_id, preview: { status: "failed" },
+      error: { code: "MUTATION_NOT_SUCCEEDED" }, preview: { preview_id: receipt.preview_id, status: "failed" },
     });
   }
 });

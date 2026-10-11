@@ -329,6 +329,7 @@ function fixture(migrationSql?: string) {
   const planner = (overrides: Partial<ApplicationPromotionDependencies> = {}) => {
     const source: ApplicationActiveRecord = {
       schema: "supacloud.application-active.v1", configurationDigest: "d".repeat(64), configurationId,
+      hosts: { api: ["reviews.example.test"] },
       runtime: {
         ...runtime, environmentId: "staging", activationId: content.source.activation_id!,
         release: { ...runtime.release, project_ref: "staging", release_id: sourceReleaseId },
@@ -336,7 +337,10 @@ function fixture(migrationSql?: string) {
     };
     const sourceState: ProjectMutationState = {
       ...state, projectRef: "staging", mutationId: source.runtime.activationId, operation: "application.release.activate",
-      resourceKey: projectMutationResourceKey(applicationPromotionResource("reviews", "staging")),
+      resourceKey: projectMutationResourceKey({
+        type: "application_release",
+        id: stableSha256({ applicationId: "reviews", environmentId: "staging" }),
+      }),
       status: "succeeded", responseStatus: 200, checkpoint: {}, receipt: {
         project_ref: "staging", application_id: "reviews", environment_id: "staging", release_id: sourceReleaseId,
         activation_id: source.runtime.activationId, replayed: false,
@@ -345,6 +349,18 @@ function fixture(migrationSql?: string) {
     const sourceEvidence = smoke(source);
     sourceEvidence.scope = { project_ref: "staging", application_id: "reviews", environment_id: "staging" };
     sourceEvidence.activation.release_id = sourceReleaseId;
+    const sourceCheckpoint = {
+      schema: "supacloud.application-activation.v1", phase: "committed",
+      desired: {
+        ...source,
+        hosts: Object.entries(source.hosts ?? {}).map(([target, hosts]) => ({ target, hosts })),
+        runtime: {
+          ...source.runtime,
+          ports: Object.entries(source.runtime.ports).map(([target, port]) => ({ target, port })),
+        },
+      },
+      previous: null,
+    };
     return new ApplicationPromotions({
       storage: { readMigrations: async () => ({ record: structuredClone(source.runtime.release), archives }) },
       transfers: { readPlan: async () => ({
@@ -365,7 +381,10 @@ function fixture(migrationSql?: string) {
       }) },
       evidence: { read: async ref => structuredClone(ref === "staging" ? sourceEvidence : persisted) },
       mutations: { read: async (ref, id) => structuredClone(
-        ref === "staging" && id === source.runtime.activationId ? sourceState : id === parentId ? state : null,
+        ref === "staging" && id === source.runtime.activationId
+          ? { ...sourceState, checkpoint: sourceCheckpoint,
+            requestFingerprint: stableSha256({ desired: source, expectedActivationId: null }) }
+          : id === parentId ? state : null,
       ) },
       assertIdle: async scope => {
         if (scope.projectRef === "demo" && ["running", "outcome_unknown"].includes(state.status)) {

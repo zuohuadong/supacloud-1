@@ -3,11 +3,13 @@ import {
   ApplicationConfigurationWriteSchema, ApplicationConfigurationIdSchema,
   ApplicationActivationIdSchema, ApplicationActivationWriteSchema, ApplicationActivationResultSchema,
   ApplicationActivationRetirementResultSchema, ApplicationRollbackSnapshotSchema, DeploymentEvidenceSchema, parseDeploymentEvidence,
+  ApplicationReleaseTransferPlanSchema, ApplicationReleaseTransferResultSchema,
   ApplicationActivationHistorySchema, ApplicationActivationHistoryCursorSchema, type DeploymentEvidence,
 } from "@supacloud/delivery";
 import { sql } from "../db";
 import { getVerifiedRequestPrincipal, requireProjectOrAdminAuth } from "../middleware/auth";
 import { ApplicationReleaseError, ApplicationReleaseStorage } from "../services/application-release-storage";
+import { ApplicationReleaseTransfers, ApplicationReleaseTransferError } from "../services/application-release-transfer";
 import { ApplicationDevelopmentError, extractApplicationDevelopment } from "../services/application-development.service";
 import { uploadApplicationRelease } from "../services/application-release-upload";
 import { ApplicationActiveStorage } from "../services/application-active-storage";
@@ -52,6 +54,7 @@ function activationFailure(error: unknown, identity: {
 }
 
 interface ApplicationRouteDependencies {
+  transfers?: Pick<ApplicationReleaseTransfers, "readPlan" | "transfer">;
   deployPlans?: Pick<ApplicationDeployPlans, "read">;
   storage?: ApplicationReleaseStorage;
   authorize?: typeof requireProjectOrAdminAuth;
@@ -84,6 +87,17 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   const storage = dependencies.storage ?? new ApplicationReleaseStorage();
   const authorize = dependencies.authorize ?? requireProjectOrAdminAuth;
   const exists = dependencies.projectExists ?? projectExists;
+  const transfers = dependencies.transfers ?? new ApplicationReleaseTransfers(storage);
+  const sourceAccess = async (request: Request, ref: string, id: string, releaseId: string) => {
+    const url = new URL(request.url);
+    url.pathname = `/v1/projects/${ref}/applications/${id}/releases/${releaseId}`;
+    url.search = "";
+    // 重新构造源 GET 请求，使项目 scope 和委托读取权限均基于源路径。
+    const sourceRequest = new Request(url, { method: "GET", headers: request.headers });
+    const denied = await authorize(sourceRequest, ref);
+    if (denied) throw new ApplicationReleaseTransferError("APPLICATION_RELEASE_TRANSFER_SOURCE_DENIED", denied.status);
+    if (!await exists(ref)) throw new ApplicationReleaseTransferError("APPLICATION_RELEASE_TRANSFER_SOURCE_NOT_FOUND", 404);
+  };
   const active = dependencies.active ?? new ApplicationActiveStorage();
   const readiness = dependencies.readiness ?? new ApplicationReadiness();
   const migrations = dependencies.migrations ?? new ApplicationMigrations({ storage });
@@ -115,6 +129,9 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
   });
   const routes = new Elysia({ prefix: "/v1/projects/:ref/applications", name: "application-releases" })
     .error(({ error }) => {
+      if (error instanceof ApplicationReleaseTransferError) {
+        return status(error.statusCode, { code: error.code, error: "Application release transfer is unavailable" });
+      }
       if (error instanceof ApplicationDeployPlanError) {
         return status(error.statusCode, { code: error.code, error: "Application deploy plan is unavailable" });
       }
@@ -384,6 +401,37 @@ export function createApplicationRoutes(dependencies: ApplicationRouteDependenci
         evidence: await evidence.write(observed),
       };
     })
+    .get("/:id/release-transfer-plan", {
+      params,
+      response: { 200: ApplicationReleaseTransferPlanSchema },
+      query: t.Object({
+        source_ref: params.properties.ref,
+        source_release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+      }, { additionalProperties: false }),
+      beforeHandle: ({ params: values, query, request }) =>
+        sourceAccess(request, query.source_ref, values.id, query.source_release_id),
+      detail: { tags: ["applications"], summary: "Compare a verified source artifact with target inventory without copying or activating" },
+    }, ({ params: values, query }) =>
+      transfers.readPlan({
+        projectRef: values.ref, applicationId: values.id,
+        sourceProjectRef: query.source_ref, sourceReleaseId: query.source_release_id,
+      }))
+    .post("/:id/release-transfers", {
+      params,
+      response: { 200: ApplicationReleaseTransferResultSchema },
+      body: t.Object({
+        source_ref: params.properties.ref,
+        source_release_id: t.String({ pattern: "^[a-f0-9]{64}$" }),
+        expected_manifest_sha256: t.String({ pattern: "^[a-f0-9]{64}$" }),
+      }, { additionalProperties: false }),
+      beforeHandle: ({ params: values, body, request }) =>
+        sourceAccess(request, body.source_ref, values.id, body.source_release_id),
+      detail: { tags: ["applications"], summary: "Materialize a verified artifact in the target project without build, configuration copying or activation" },
+    }, ({ params: values, body }) =>
+      transfers.transfer({
+        projectRef: values.ref, applicationId: values.id, sourceProjectRef: body.source_ref,
+        sourceReleaseId: body.source_release_id, expectedManifestSha256: body.expected_manifest_sha256,
+      }))
     .get("/:id/releases", {
       params,
       query: t.Object({

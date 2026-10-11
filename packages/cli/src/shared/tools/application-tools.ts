@@ -19,6 +19,7 @@ import { optional, stringEnum, withDescription, type ToolSchema } from "../schem
 import { projectRefPathSegment } from "../project-ref";
 import type { HttpResult, HttpTransport } from "../transports/http";
 import { registerTool, type ToolServer } from "../tool-server";
+import { applicationReleaseTransfer } from "./application-release-transfer";
 import {
   releaseControlFailure, releaseControlMutationFailure, releaseControlSuccess, type ReleaseControlToolResponse,
 } from "./release-control-response";
@@ -28,6 +29,7 @@ export const APPLICATION_TOOL_SCHEMA = {
   action: withDescription(stringEnum([
     "list_releases", "get_release", "upload_release", "get_runtime", "get_deployment_evidence",
     "get_configuration", "put_configuration", "get_deploy_plan", "deploy_release",
+    "get_release_transfer_plan", "transfer_release",
     "activate_release", "rollback_release", "get_rollback_snapshot", "get_history", "reconcile_activation", "retire_activation",
     ...APPLICATION_PREVIEW_ACTIONS,
     "logs",
@@ -42,6 +44,8 @@ export const APPLICATION_TOOL_SCHEMA = {
   configuration_path: optional(Type.String(), "[put_configuration] Local configuration write JSON including revision and expected revision"),
   manifest_path: optional(Type.String(), "[upload_release] Local delivery.manifest.json"),
   release_id: optional(ApplicationReleaseIdSchema, "[get_release/get_deploy_plan/deploy_release/activate_release/reconcile_activation/rollback_release] Immutable application release ID; platform selects previous for default rollback"),
+  source_ref: optional(Type.String({ pattern: "^[A-Za-z0-9_-]{1,20}$" }), "[get_release_transfer_plan/transfer_release] Source project ref"),
+  source_release_id: optional(ApplicationReleaseIdSchema, "[get_release_transfer_plan/transfer_release] Source immutable release ID"),
   cursor: optional(Type.Union([ApplicationReleaseIdSchema, ApplicationActivationHistoryCursorSchema]), "[list_releases/get_history] Returned page cursor"),
   limit: optional(Type.Integer({ minimum: 1, maximum: 100 }), "[list_releases/get_history] Page size, default 50/20"),
   offset: optional(Type.Integer({ minimum: 0, maximum: 1_000_000 }), "[logs] Result offset"),
@@ -322,6 +326,11 @@ export function registerApplicationTools(server: ToolServer, http: HttpTransport
       if (!Value.Check(ApplicationIdSchema, id)) throw new Error("Invalid application ID");
       const path = `/v1/projects/${project}/applications/${encodeURIComponent(id)}/releases`;
       const operation = `applications.${action}`;
+      if (action === "get_release_transfer_plan" || action === "transfer_release") {
+        return applicationReleaseTransfer(http, {
+          action, ref, id, sourceRef: text(args, "source_ref"), sourceReleaseId: text(args, "source_release_id"),
+        }, project);
+      }
       if (action === "get_deploy_plan") {
         const observed = await readDeployPlan(http, args, project);
         return observed.failure ?? releaseControlSuccess(operation, { ...observed.identity, plan: observed.plan });

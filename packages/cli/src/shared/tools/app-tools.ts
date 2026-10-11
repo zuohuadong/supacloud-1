@@ -72,14 +72,14 @@ const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
     ref: "[upload/configure/transfer-plan/transfer/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Project ref (defaults to context)",
     id: "[upload/configure/transfer-plan/transfer/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Application ID",
     environment_id: "[configure/promote-plan/deploy/deploy-plan/diff/status/rollback/rollback-plan/history/reconcile/retire/preview-plan/preview/previews/preview-status/preview-cleanup] Target environment ID",
-    configuration_id: "[promote-plan/deploy/deploy-plan/diff/rollback/preview] Immutable target configuration revision; required for activation; platform selects for default rollback",
+    configuration_id: "[promote-plan/deploy/deploy-plan/diff/rollback/preview] Immutable target configuration revision; required for deployment/preview; platform selects for default rollback",
     activation_id: "[deploy/rollback/reconcile/retire] Stable activation ID; auto-generated for deploy/rollback if omitted",
     expected_activation_id: "[deploy/rollback] Auto-selected from verified state; supply with activation_id for an exact retry",
     configuration_path: "[configure] Configuration write JSON including revision and expected revision",
     manifest_path: "[upload] Local delivery.manifest.json",
     release_id: "[deploy/deploy-plan/diff/rollback/reconcile/preview-plan/preview] Required for deployment/preview; defaults to journal-selected previous for rollback",
-    source_ref: "[transfer-plan/transfer] Source project ref",
-    source_release_id: "[transfer-plan/transfer] Source immutable release ID",
+    source_ref: "[transfer-plan/transfer/promote-plan] Source project ref",
+    source_release_id: "[transfer-plan/transfer/promote-plan] Source immutable release ID",
     source_environment_id: "[promote-plan] Source environment ID",
     preview_id: "[preview-status/preview-cleanup] Preview receipt ID",
     branch_ref: "[preview-plan] Proposed branch ref; preview assigns its own",
@@ -1204,7 +1204,8 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--database-url applies only to app dev --profile integration");
     }
     if (request.json !== undefined
-        && request.action !== "history" && request.action !== "transfer-plan" && request.action !== "transfer" && request.action !== "promote-plan") {
+        && request.action !== "history" && request.action !== "transfer-plan" && request.action !== "transfer"
+        && request.action !== "promote-plan") {
         throw new Error("--json applies only to app history, transfer-plan, transfer or promote-plan");
     }
     if (request.json !== undefined && request.format === "text") throw new Error("--json and --format text cannot be combined");
@@ -1224,7 +1225,6 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
         if ((request.action === "deploy-plan" || request.action === "diff") && format !== "json") {
             return formatRemoteDeployPlan(result);
         }
-        // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
         if (request.action === "promote-plan" && !result.isError && format !== "json" && !json) {
             const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
             if (!payload || typeof payload !== "object" || !("plan" in payload)) return result;
@@ -1237,6 +1237,7 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
                 "Execution: not performed",
             ].join("\n"));
         }
+        // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
         return (request.action === "transfer-plan" || request.action === "transfer") && format !== "json" && !json
             ? formatReleaseTransfer(result) : result;
     }
@@ -1300,7 +1301,7 @@ export function registerAppTools(server: ToolServer, options: AppToolOptions = {
             include: optional(Type.String(), "[dev/compile/check] Comma-separated glob patterns for source files"),
             out_dir: optional(Type.String(), "[dev/compile/plan/build/export-tools] Output directory (default: configured outDir)"),
             strict: optional(Type.Boolean(), "[dev/compile/check] Promote warnings to errors"),
-            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/deploy-plan/diff/history/graph/export-tools] Output format (default: text)"),
+            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/deploy-plan/diff/history/promote-plan/graph/export-tools] Output format (default: text)"),
             json: optional(Type.Boolean(), "[history/transfer-plan/transfer/promote-plan] Preserve or return the full machine-readable receipt"),
             profile: optional(stringEnum(["fast", "integration"]), "[dev] Run dev or dev:integration; integration verifies an explicit loopback database"),
             once: optional(Type.Boolean(), "[dev] Validate and report once without watching"),

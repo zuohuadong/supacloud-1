@@ -22,7 +22,9 @@ import { ApplicationDeploymentEvidenceObserver } from "../services/application-d
 import { victoriaLogsService } from "../services/victorialogs.service";
 import { applicationRuntimePlan } from "../services/application-runtime";
 import { buildApplicationPreviewReceipt } from "../services/application-preview-contract";
-import { ApplicationPreviewService, APPLICATION_PREVIEW_MIN_TTL_SECONDS, APPLICATION_PREVIEW_MAX_TTL_SECONDS } from "../services/application-preview.service";
+import {
+  ApplicationPreviewService, APPLICATION_PREVIEW_MIN_TTL_SECONDS, APPLICATION_PREVIEW_MAX_TTL_SECONDS,
+} from "../services/application-preview.service";
 import { ApplicationDeployPlans, ApplicationDeployPlanError } from "../services/application-deploy-plan";
 import { ApplicationRollbackError, ApplicationRollbackSnapshots } from "../services/application-rollback";
 

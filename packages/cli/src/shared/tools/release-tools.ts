@@ -187,10 +187,17 @@ function httpFailure(operation: ReleaseOperation, response: HttpResult<unknown>)
     return releaseControlFailure(operation, "HTTP_ERROR", response.transportError ? null : response.status);
 }
 
+function mutationOutcomeUnknown(response: HttpResult<unknown>): boolean {
+    // These synchronous release controls require HTTP 200 and a verified receipt.
+    // Other 2xx responses cannot prove either completion or a definite failure.
+    return Boolean(response.responseReadError || response.transportError || response.status === 408
+        || response.status >= 500 || (response.status >= 200 && response.status < 300 && response.status !== 200));
+}
+
 function mutationFailure(
     operation: ReleaseOperation, response: HttpResult<unknown>, safeState: Record<string, unknown> = {},
 ): ReleaseControlToolResponse {
-    if (response.responseReadError || response.transportError || response.status === 408 || response.status >= 500) {
+    if (mutationOutcomeUnknown(response)) {
         return releaseControlFailure(operation, "OUTCOME_UNKNOWN", response.transportError ? null : response.status, safeState);
     }
     return releaseControlFailure(operation, "HTTP_ERROR", response.status, safeState);
@@ -799,9 +806,7 @@ export function registerReleaseTools(
                     mutation = { ok: false, status: 0, data: null, transportError: true };
                 }
                 if (!mutation.ok || mutation.status !== 200) {
-                    const uncertain = mutation.responseReadError || mutation.transportError
-                        || mutation.status === 408 || mutation.status >= 500;
-                    if (uncertain) {
+                    if (mutationOutcomeUnknown(mutation)) {
                         const observed = await readBackup(http, projectRef, backupId);
                         // 文件读回不证明创建请求的目录同步已完成，保留未确认状态。
                         if (observed.backup) return releaseControlFailure("release.logical_backup.create",
@@ -827,7 +832,8 @@ export function registerReleaseTools(
                 const read = await readBackup(http, projectRef, backupId);
                 const state = { project_ref: projectRef, backup_id: backupId };
                 if (!read.response.ok || read.response.status !== 200) {
-                    const code = read.response.responseReadError ? "INVALID_RESPONSE" : "HTTP_ERROR";
+                    const code = read.response.responseReadError
+                        || (read.response.status >= 200 && read.response.status < 300) ? "INVALID_RESPONSE" : "HTTP_ERROR";
                     return releaseControlFailure("release.logical_backup.status", code,
                         read.response.transportError ? null : read.response.status, state);
                 }

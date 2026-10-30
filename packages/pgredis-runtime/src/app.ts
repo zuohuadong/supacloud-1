@@ -215,7 +215,7 @@ export function createPgredisRuntimeApp(options: PgredisRuntimeAppOptions) {
   const adminToken = options.adminToken ?? options.signingSecret;
   const maxKeysPerRequest = options.maxKeysPerRequest ?? DEFAULT_MAX_KEYS_PER_REQUEST;
   return new Elysia({ normalize: false })
-    .error(({ error, set }) => {
+    .onError(({ error, set }) => {
     const code = error instanceof Error && "code" in error && typeof error.code === "string" ? error.code.toUpperCase().replaceAll("-", "_") : "UNKNOWN";
       if (code === "VALIDATION") {
         set.status = 400;

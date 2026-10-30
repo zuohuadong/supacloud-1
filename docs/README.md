@@ -4,6 +4,7 @@
 
 ## Quick Links
 
+- [Project Introduction](./project-introduction.md) - Comprehensive Chinese introduction to the platform, architecture, workflows, boundaries, and operations
 - [CLI Guide](./cli-guide.md) - User CLI vs admin CLI entrypoints and command boundaries
 - [Project Endpoint Projection](./project-endpoint-projection.md) - Authoritative API/Auth/Studio origins and project/Admin read boundaries
 - [Deploy Guide](./deploy-guide.md) - Complete deployment guide

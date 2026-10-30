@@ -4,6 +4,7 @@
   import {
     Box,
     Braces,
+    CalendarClock,
     ChartNoAxesCombined,
     ChevronDown,
     Code2,
@@ -56,6 +57,7 @@
     { titleKey: "Navigation.auth", icon: Users, href: `/project/${projectRef}/auth` },
     { titleKey: "Navigation.storage", icon: Box, href: `/project/${projectRef}/storage` },
     { titleKey: "Navigation.edge_functions", icon: Zap, href: `/project/${projectRef}/functions` },
+    { titleKey: "Navigation.scheduled_functions", icon: CalendarClock, href: `/project/${projectRef}/scheduled-functions` },
     { titleKey: "Navigation.cache", icon: MemoryStick, href: `/project/${projectRef}/cache` },
     { titleKey: "Hosting.title", icon: Globe, href: `/project/${projectRef}/hosting` },
   ] : []);

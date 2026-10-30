@@ -127,7 +127,8 @@
     "settings": "项目设置",
     "reports": "监控与诊断",
     "realtime_inspector": "实时订阅调试器",
-    "tasks": "任务中心"
+    "tasks": "任务中心",
+    "scheduled_functions": "定时函数"
   },
   "Project": {
     "home": "首页",
@@ -2276,5 +2277,21 @@
     "modified": "已修改",
     "after_editing_parameters_clicking_save_changes_will_execute": "修改参数后点击保存变更将执行",
     "memory_value_invalid": "以内存 MB 为单位的值必须是整数，或输入 -1 表示自动配置。"
+  },
+  "RoleMatrix": {
+    "title": "角色矩阵", "subtitle": "查看 anon、authenticated 与自定义角色对表的实际权限。此页面只读，最终权限仍以 RLS 为准。",
+    "eyebrow": "权限审查", "refresh": "刷新", "schema": "Schema", "roles": "角色（逗号分隔）",
+    "load_failed": "无法加载角色矩阵。", "table": "表", "role": "角色", "issues": "问题",
+    "effective": "可用", "bypass": "绕过", "grant_only": "仅 grant", "policy_only": "仅策略",
+    "effective_hint": "grant + 适用策略，或显式 RLS bypass", "grant_hint": "有 grant 但没有适用策略", "policy_hint": "有策略但角色缺少 grant",
+    "tables": "表（可选）", "tables_hint": "逗号分隔，仅扫描指定表", "prev": "上一页", "next": "下一页"
+  },
+  "ScheduledFunctions": {
+    "title": "定时函数", "subtitle": "查看平台级 cron 调度及其持久化运行历史，包含每次运行的重试与死信状态。",
+    "eyebrow": "自动化", "refresh": "刷新", "schedules": "调度列表", "no_schedules": "暂无定时函数。",
+    "enabled": "已启用", "disabled": "已停用", "run_now": "立即运行", "runs": "运行历史", "no_runs": "暂无运行记录。",
+    "select_hint": "选择一个调度以查看运行历史。", "scheduled_for": "计划时间", "status": "状态", "attempt": "尝试",
+    "started": "开始时间", "finished": "结束时间", "error": "错误", "load_failed": "无法加载定时函数。", "runs_failed": "无法加载运行历史。",
+    "trigger_failed": "无法触发该调度。"
   }
 }

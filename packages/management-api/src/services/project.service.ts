@@ -25,6 +25,7 @@ import {
   type EdgeFunctionLimits,
 } from "./edge-function.service";
 import { logger } from "../utils/logger";
+import { publishGraphqlAllowlistInvalidation } from "./graphql-allowlist-invalidation.service";
 import { config } from "../config";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
@@ -647,6 +648,8 @@ export class ProjectService {
     const shouldRestartRuntime = routingKeys.some((key) =>
       JSON.stringify(currentConfig[key]) !== JSON.stringify(updatedConfig[key])
     );
+    const graphqlAllowlistChanged = JSON.stringify(currentConfig.graphql_allowlist)
+      !== JSON.stringify(updatedConfig.graphql_allowlist);
 
     if (shouldRestartRuntime) {
       try {
@@ -661,6 +664,19 @@ export class ProjectService {
           error: err,
         });
       }
+    } else if (graphqlAllowlistChanged && updated) {
+      try {
+        await this.reconcileGatewayRoutes(ref, updatedConfig);
+      } catch (err) {
+        logger.warn("[ProjectService] Failed to reconcile GraphQL allowlist gateway route", {
+          ref,
+          error: err,
+        });
+      }
+    }
+
+    if (graphqlAllowlistChanged) {
+      await publishGraphqlAllowlistInvalidation(ref);
     }
 
     return updated ? normalizeProjectConfig(updated.config) : null;

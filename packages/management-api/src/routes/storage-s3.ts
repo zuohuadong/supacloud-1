@@ -185,7 +185,7 @@ async function authenticate(request: Request, ref: string): Promise<boolean> {
 }
 
 export const storageS3Routes = new Elysia({ prefix: "/v1/storage/:ref/s3" })
-  .beforeHandle(async ({ params, request, set }) => {
+  .onBeforeHandle(async ({ params, request, set }) => {
     if (new URL(request.url).pathname.endsWith("/credentials")) {
       const authResult = await getAuthContext(request);
       if ("status" in authResult) {
@@ -288,7 +288,7 @@ export const storageS3Routes = new Elysia({ prefix: "/v1/storage/:ref/s3" })
   })
 
   // HEAD /:bucket -> HeadBucket
-  .method("HEAD", "/:bucket", {
+  .route("HEAD", "/:bucket", {
     params: t.Object({ ref: t.String(), bucket: t.String() }),
     detail: { tags: ["storage-s3"], summary: "S3 HeadBucket" },
   }, async ({ params, set }) => {
@@ -373,7 +373,7 @@ export const storageS3Routes = new Elysia({ prefix: "/v1/storage/:ref/s3" })
   })
 
   // HEAD /:bucket/* -> HeadObject
-  .method("HEAD", "/:bucket/*", {
+  .route("HEAD", "/:bucket/*", {
     params: t.Object({ ref: t.String(), bucket: t.String(), ["*"]: t.String() }),
     detail: { tags: ["storage-s3"], summary: "S3 HeadObject" },
   }, async ({ params, set }) => {

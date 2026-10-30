@@ -429,6 +429,47 @@ export async function ensurePlatformV2Schema(transaction: SQL): Promise<void> {
       ON project_webhooks(project_ref, created_at ASC)
       WHERE deleted_at IS NULL;
 
+    CREATE TABLE IF NOT EXISTS scheduled_function_runs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_ref VARCHAR(20) NOT NULL REFERENCES projects(ref) ON DELETE CASCADE,
+      schedule_id UUID NOT NULL,
+      schedule_name TEXT NOT NULL,
+      scheduled_for TIMESTAMPTZ NOT NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'succeeded', 'retry_scheduled', 'dead_lettered', 'skipped')),
+      attempt INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      locked_at TIMESTAMPTZ,
+      locked_by TEXT,
+      http_status INTEGER,
+      error TEXT,
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(project_ref, schedule_id, scheduled_for)
+    );
+    CREATE INDEX IF NOT EXISTS scheduled_function_runs_ready_idx
+      ON scheduled_function_runs(status, next_attempt_at, created_at)
+      WHERE status IN ('pending', 'retry_scheduled');
+    CREATE INDEX IF NOT EXISTS scheduled_function_runs_lookup_idx
+      ON scheduled_function_runs(project_ref, schedule_id, scheduled_for DESC);
+
+    CREATE TABLE IF NOT EXISTS scheduled_jobs (
+      project_ref VARCHAR(20) NOT NULL REFERENCES projects(ref) ON DELETE CASCADE,
+      schedule_id UUID NOT NULL,
+      schedule_name TEXT NOT NULL,
+      cron TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      next_run_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project_ref, schedule_id)
+    );
+    CREATE INDEX IF NOT EXISTS scheduled_jobs_next_run_idx
+      ON scheduled_jobs(next_run_at)
+      WHERE enabled;
+
     CREATE TABLE IF NOT EXISTS webhook_outbox (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       project_ref VARCHAR(20) NOT NULL REFERENCES projects(ref) ON DELETE CASCADE,

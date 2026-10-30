@@ -21,6 +21,15 @@ const database = Object.assign(
     if (query.startsWith("SELECT config FROM projects")) {
       return projectExists ? [{ config: structuredClone(projectConfig) }] : [];
     }
+    if (query.startsWith("SELECT schedule_id FROM scheduled_jobs")) {
+      return [];
+    }
+    if (query.startsWith("DELETE FROM scheduled_jobs")) {
+      return [];
+    }
+    if (query.startsWith("INSERT INTO scheduled_jobs")) {
+      return [];
+    }
     if (query.startsWith("UPDATE projects")) {
       updateCount += 1;
       if (!query.includes("jsonb_set")) {

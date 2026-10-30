@@ -67,6 +67,7 @@ import {
   updateDatabaseSettings,
 } from "../services/project-database-config.service";
 import { publicScheduledFunctionProjectConfig } from "../utils/scheduled-function-config";
+import { parseGraphqlAllowlistConfig } from "../utils/graphql-allowlist";
 import { normalizeOAuthServerConfig } from "../utils/project-config";
 import {
   type ReplicationSettingRow,
@@ -900,7 +901,7 @@ async function buildProjectSettingsResponse(
 export const projectConfigRoutes = new Elysia({ prefix: "/v1/projects" })
   // Group guard: uniformly protects all project-scoped routes (including addConfigRoutes factory and .use subroutes),
   // preventing individual endpoint omissions that could allow delegated members/viewers to bypass tenant.config.read / operations.read
-  .beforeHandle(async ({ params, request }) => {
+  .onBeforeHandle(async ({ params, request }) => {
     const ref = (params as { ref?: string }).ref;
     if (!ref) return;
     const authError = await requireProjectOrAdminAuth(request, ref);
@@ -948,6 +949,18 @@ export const projectConfigRoutes = new Elysia({ prefix: "/v1/projects" })
           code: "SCHEDULED_FUNCTION_API_REQUIRED",
           message: "Scheduled functions must be managed through the dedicated scheduled-functions API",
         });
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "graphql_allowlist")) {
+        try {
+          const parsed = parseGraphqlAllowlistConfig(body.graphql_allowlist);
+          if (parsed === null) delete body.graphql_allowlist;
+          else body.graphql_allowlist = parsed;
+        } catch (error) {
+          return status(400, {
+            code: "GRAPHQL_ALLOWLIST_INVALID",
+            message: error instanceof Error ? error.message : "graphql_allowlist is invalid",
+          });
+        }
       }
       const managedError = getAuthRuntimeManagedError(params.ref, "configuration");
       if (managedError && Object.prototype.hasOwnProperty.call(body, "auth")) {

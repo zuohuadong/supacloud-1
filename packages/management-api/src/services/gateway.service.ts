@@ -10,6 +10,7 @@ import {
     resolveProjectStudioHost,
 } from "../utils/project-routing";
 import { normalizeProjectConfig, resolveExternalAuthEndpointConfig } from "../utils/project-config";
+import { parseGraphqlAllowlistConfig } from "../utils/graphql-allowlist";
 import { uniqueStrings } from "../utils/strings";
 import { stableStringify } from "../utils/stable-json";
 import { GOTRUE_USER_ID_POSTGRES_PATTERN } from "../utils/project-user-lifecycle";
@@ -1719,6 +1720,14 @@ export class CaddyGatewayProvider implements GatewayProvider {
             const authUpstreamTls = sharedAuthPort === null ? externalAuthUpstream?.tls : false;
             const authUpstreamTlsInsecureSkipVerify = sharedAuthPort === null
                 && externalAuth?.auth_upstream_tls_insecure_skip_verify;
+            let graphqlAllowlistEnforced = false;
+            try {
+                graphqlAllowlistEnforced = parseGraphqlAllowlistConfig(projectConfig.graphql_allowlist)?.mode === "enforce";
+            } catch {
+                // Invalid allowlist configuration is a closed failure. Route
+                // through the Management API so it can reject the request.
+                graphqlAllowlistEnforced = true;
+            }
             const hosts = uniqueStrings(resolveProjectApiHosts(projectRef, routingConfig));
             const hostSet = new Set(hosts.map(normalizeCaddyHost));
             const authHosts = uniqueStrings([resolveProjectAuthHost(projectRef, routingConfig)])
@@ -1801,7 +1810,9 @@ export class CaddyGatewayProvider implements GatewayProvider {
                 restOpenApiRoute,
                 ...opaqueRoutes,
                 this.makeRoute({ id: caddyRouteId(projectRef, "rest"), hosts, path: "/rest/v1*", upstream: `${hostIp}:${pgrstPort}`, projectRef, stripPrefix: "/rest/v1", corsOrigins }),
-                this.makeRoute({ id: caddyRouteId(projectRef, "graphql"), hosts, path: "/graphql/v1*", upstream: `${hostIp}:${pgrstPort}`, projectRef, rewriteUri: "/rpc/graphql", headers: ["Content-Profile:graphql_public", "Accept-Profile:graphql_public"], corsOrigins }),
+                graphqlAllowlistEnforced
+                    ? this.makeRoute({ id: caddyRouteId(projectRef, "graphql"), hosts, path: "/graphql/v1*", upstream: `${hostIp}:${config.port}`, projectRef, corsOrigins, readTimeout: config.restProxyTimeoutMs })
+                    : this.makeRoute({ id: caddyRouteId(projectRef, "graphql"), hosts, path: "/graphql/v1*", upstream: `${hostIp}:${pgrstPort}`, projectRef, rewriteUri: "/rpc/graphql", headers: ["Content-Profile:graphql_public", "Accept-Profile:graphql_public"], corsOrigins }),
                 this.makeRoute({
                     id: caddyRouteId(projectRef, "auth"),
                     hosts,

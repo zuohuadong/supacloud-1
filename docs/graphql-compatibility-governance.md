@@ -55,6 +55,60 @@ Never use a service-role snapshot as proof that an anonymous or authenticated
 caller can see the same schema. Snapshot export still uses the existing
 `graphql-schema` command and an explicitly selected caller credential.
 
+## Runtime Allowlist
+
+The compiler emits `persisted_operations` with the exact printed document and
+its SHA-256. Runtime enforcement is opt-in and checks the document hash, not
+only `operationName`.
+
+For the full platform, store the allowlist in project settings under
+`graphql_allowlist`:
+
+```json
+{
+  "graphql_allowlist": {
+    "mode": "enforce",
+    "operations": [
+      {
+        "name": "OrderList",
+        "sha256": "<sha256 from graphql.manifest.json>",
+        "query": "query OrderList($first: Int = 20) { ... }"
+      }
+    ]
+  }
+}
+```
+
+`mode: "off"` keeps the previous behaviour. In `enforce` mode the Management API
+proxy rejects unlisted documents with HTTP 403 and
+`GRAPHQL_OPERATION_NOT_ALLOWED` before forwarding to PostgREST. It also accepts
+APQ-style `extensions.persistedQuery.sha256Hash`; the stored `query` is used only
+when the hash matches. A persisted hash paired with a different document is
+rejected.
+
+Each Management API process caches the allowlist for five seconds. After a
+committed configuration update, the writer publishes the project ref through
+PostgreSQL `NOTIFY supacloud_graphql_allowlist`; every process clears that
+entry immediately. The TTL remains only as a fallback for missed notifications,
+so operators do not need to set the TTL to zero.
+
+Lite accepts the same contract programmatically:
+
+```ts
+createBackend({
+  graphql: {
+    allowlist: "enforce",
+    allowedOperations: [
+      { name: "OrderList", sha256: "<hash>", query: "<printed document>" },
+    ],
+  },
+});
+```
+
+Allowlisting is a release policy, not authorization. Every allowed operation
+still goes through database grants, RLS and statement limits. Production
+introspection should remain disabled independently of the allowlist.
+
 ## Breaking Changes
 
 Compare the last promoted snapshot with the candidate:

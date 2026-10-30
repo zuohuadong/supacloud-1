@@ -84,6 +84,7 @@ describe("console navigation information architecture", () => {
       "triggers",
       "materialized-views",
       "roles",
+      "role-matrix",
       "column-privileges",
       "rls-tester",
       "temporary-access",

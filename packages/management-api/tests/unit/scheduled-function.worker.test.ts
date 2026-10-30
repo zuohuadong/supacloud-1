@@ -7,6 +7,7 @@ import {
 } from "../../src/workers/scheduled-function.worker";
 import { projectRepository } from "../../src/repositories/project.repository";
 import { MAX_SCHEDULE_BODY_BYTES } from "../../src/utils/scheduled-function-config";
+import { nextScheduledFunctionRunAt } from "../../src/utils/scheduled-function-cron";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -122,6 +123,27 @@ describe("scheduled-function cron parser (isDue)", () => {
     const date = new Date("2026-06-15T10:00:00Z");
     expect(isDue("not a cron", date)).toBe(false);
     expect(isDue("* * *", date)).toBe(false);
+  });
+
+  test("computes the next occurrence strictly after the reference time", () => {
+    const after = new Date(2026, 5, 15, 10, 30, 15);
+    const next = nextScheduledFunctionRunAt("*/10 * * * *", after);
+    expect(next?.getFullYear()).toBe(2026);
+    expect(next?.getMonth()).toBe(5);
+    expect(next?.getDate()).toBe(15);
+    expect(next?.getHours()).toBe(10);
+    expect(next?.getMinutes()).toBe(40);
+    expect(next?.getSeconds()).toBe(0);
+  });
+
+  test("advances an annual schedule to the next matching day", () => {
+    const after = new Date(2026, 0, 2, 0, 0, 0);
+    const next = nextScheduledFunctionRunAt("0 2 1 1 *", after);
+    expect(next?.getFullYear()).toBe(2027);
+    expect(next?.getMonth()).toBe(0);
+    expect(next?.getDate()).toBe(1);
+    expect(next?.getHours()).toBe(2);
+    expect(next?.getMinutes()).toBe(0);
   });
 });
 

@@ -77,7 +77,7 @@ function sanitizeDrain(drain: LogDrainConfig): LogDrainConfig {
 }
 
 export const logDrainRoutes = new Elysia({ prefix: "/v1/projects/:ref/log-drains" })
-  .beforeHandle(async ({ params, request }) => {
+  .onBeforeHandle(async ({ params, request }) => {
     const authError = await authMiddleware.requireProjectOrAdminAuth(request, params.ref);
     if (authError) return status(authError.status, authError.body);
   })

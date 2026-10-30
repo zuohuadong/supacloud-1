@@ -127,7 +127,8 @@
     "settings": "Project Settings",
     "reports": "Monitoring & Diagnostics",
     "realtime_inspector": "Realtime Inspector",
-    "tasks": "Task Center"
+    "tasks": "Task Center",
+    "scheduled_functions": "Scheduled Functions"
   },
   "Project": {
     "home": "Home",
@@ -2276,5 +2277,21 @@
     "modified": "Modified",
     "after_editing_parameters_clicking_save_changes_will_execute": "After editing parameters, clicking Save Changes will execute",
     "memory_value_invalid": "Memory values in MB must be whole numbers or -1 for automatic sizing."
+  },
+  "RoleMatrix": {
+    "title": "Role Matrix", "subtitle": "Review effective table privileges for anon, authenticated and custom roles. This is a read-only diagnostic; RLS remains authoritative.",
+    "eyebrow": "Access review", "refresh": "Refresh", "schema": "Schema", "roles": "Roles (comma separated)",
+    "load_failed": "Unable to load the role matrix.", "table": "Table", "role": "Role", "issues": "Issues",
+    "effective": "yes", "bypass": "bypass", "grant_only": "grant", "policy_only": "policy",
+    "effective_hint": "grant + applicable policy, or explicit RLS bypass", "grant_hint": "grant exists but no applicable policy", "policy_hint": "policy exists but the role lacks the grant",
+    "tables": "Tables (optional)", "tables_hint": "Comma separated table names to limit the scan", "prev": "Prev", "next": "Next"
+  },
+  "ScheduledFunctions": {
+    "title": "Scheduled Functions", "subtitle": "Review platform-level cron schedules and their durable run history. Retries and dead letters are tracked per run.",
+    "eyebrow": "Automation", "refresh": "Refresh", "schedules": "Schedules", "no_schedules": "No scheduled functions yet.",
+    "enabled": "enabled", "disabled": "disabled", "run_now": "Run now", "runs": "Run history", "no_runs": "No runs recorded yet.",
+    "select_hint": "Select a schedule to inspect its run history.", "scheduled_for": "Scheduled for", "status": "Status", "attempt": "Attempt",
+    "started": "Started", "finished": "Finished", "error": "Error", "load_failed": "Unable to load scheduled functions.", "runs_failed": "Unable to load run history.",
+    "trigger_failed": "Unable to trigger the schedule."
   }
 }

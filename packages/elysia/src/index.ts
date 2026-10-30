@@ -1159,7 +1159,7 @@ export function createModulePlugin<
 
   const createRequestScope = compiled.createRequestScope;
   const requestScopes = new WeakMap<Request, Record<string, unknown>>();
-  plugin.afterResponse(async ({ request }) => {
+  plugin.onAfterResponse(async ({ request }) => {
     const scope = requestScopes.get(request);
     requestScopes.delete(request);
     try {
@@ -1190,11 +1190,11 @@ export function createModulePlugin<
   // the catch-all below still handles ParseError/ValidationError and unknown
   // failures. Both lanes share `mapError`, so `errorMapper` observes every
   // error exactly once regardless of which entry served it.
-  plugin.error(ApplicationError, ({ error, request }) =>
+  plugin.onError(ApplicationError, ({ error, request }) =>
     mapError(error, frameworkErrorCode(error), request));
-  plugin.error(SchemaContractError, ({ error, request }) =>
+  plugin.onError(SchemaContractError, ({ error, request }) =>
     mapError(error, frameworkErrorCode(error), request));
-  plugin.error(({ error, request }) => mapError(error, frameworkErrorCode(error), request));
+  plugin.onError(({ error, request }) => mapError(error, frameworkErrorCode(error), request));
 
   // Compiled descriptors carry runtime schemas, not native literal route types.
   // Widen only registration; keep the public plugin's context/service inference.
@@ -1247,7 +1247,7 @@ export function createModulePlugin<
               const result = await policy.mapResponse!({
                 http: context, requestContext: requestContexts.get(context.request), response,
                 encodeResponse: async (value) => {
-                  const validator = responseValidators?.[responseStatusOf(value, context.set.status)];
+                  const validator = responseValidators?.get(responseStatusOf(value, context.set.status));
                   if (!validator) return value;
                   if (!("EncodeFrom" in validator) || typeof validator.EncodeFrom !== "function") {
                     throw new ApplicationError("Response validation failed", { code: "RESPONSE_VALIDATION_FAILED" });

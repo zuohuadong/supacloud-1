@@ -398,7 +398,7 @@ export const storageCompatRoutes = new Elysia({ prefix: "" })
         set.status = 204;
         return '';
     })
-    .afterHandle(({ headers, set }) => {
+    .onAfterHandle(({ headers, set }) => {
         const origin = headers['origin'] || headers['Origin'] || '';
         if (origin && !set.headers['Access-Control-Allow-Origin']) {
             set.headers['Access-Control-Allow-Origin'] = origin;
@@ -416,7 +416,7 @@ export const storageCompatRoutes = new Elysia({ prefix: "" })
     // If accessed directly (bypassing the gateway), getProjectRef returns '' and each
     // route already returns 400 "Missing tenant reference". This guard adds
     // defense-in-depth logging for monitoring direct-access attempts.
-    .beforeHandle(async ({ headers, request }) => {
+    .onBeforeHandle(async ({ headers, request }) => {
         const ref = await getProjectRef(headers as Record<string, string | undefined>);
         if (!ref) {
             logger.warn('[StorageCompat] Request without project ref detected', {
@@ -428,7 +428,7 @@ export const storageCompatRoutes = new Elysia({ prefix: "" })
     })
     
     // Inject standard Supabase compatibility headers on all API responses
-    .afterHandle(({ set }) => {
+    .onAfterHandle(({ set }) => {
         set.headers['x-supabase-api-version'] = new Date().toISOString().slice(0, 10).replace(/-/g, '').substring(0, 8);
         set.headers['sb-gateway-version'] = '1.0.0';
     })

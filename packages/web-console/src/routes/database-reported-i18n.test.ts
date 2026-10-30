@@ -6,6 +6,7 @@ const zh = JSON.parse(readFileSync(new URL("../lib/i18n/locales/zh.json", import
 const pageNames = [
   "materialized-views",
   "roles",
+  "role-matrix",
   "column-privileges",
   "extensions",
   "publications",
@@ -18,6 +19,7 @@ const pageNames = [
 const expectedObjects = [
   "MaterializedViews",
   "Roles",
+  "RoleMatrix",
   "ColumnPrivileges",
   "Extensions",
   "Publications",

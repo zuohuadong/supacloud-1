@@ -49,6 +49,18 @@ export {
 } from './migration-bindings.js';
 
 export {
+  buildRoleMatrix,
+  formatRoleMatrix,
+  DEFAULT_ROLE_MATRIX_ROLES,
+  ROLE_MATRIX_OPERATIONS,
+  type RoleMatrixCell,
+  type RoleMatrixIssue,
+  type RoleMatrixOperation,
+  type RoleMatrixOptions,
+  type RoleMatrixReport,
+} from './matrix.js';
+
+export {
   buildDatabaseManifest,
   explainObject,
   type DatabaseManifest,

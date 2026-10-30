@@ -4,6 +4,7 @@
 
 ## 快速链接
 
+- [项目详细介绍](./project-introduction.md) - 平台定位、总体架构、核心子系统、关键工作流、部署形态与能力边界
 - [CLI 使用指南](./cli-guide.md) - 用户 CLI 与管理员 CLI 入口职责边界
 - [项目端点投射](./project-endpoint-projection.md) - 权威 API/Auth/Studio 源站与项目/Admin 读取边界
 - [部署指南](./deploy-guide.md) - 完整部署使用指南

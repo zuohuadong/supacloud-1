@@ -413,7 +413,7 @@ function toElysiaResponseSchema(response: unknown): unknown {
 /** Convert the shared contract shape to Elysia's `response` route option. */
 export function toElysiaRouteSchema<const Schemas extends RouteContractSchemas>(
   contract: Schemas,
-): InputSchema<never> {
+): InputSchema<never> & Record<string, unknown> {
   if (contract.response !== undefined && contract.responses !== undefined) {
     conflictingResponseSchemas();
   }
@@ -425,7 +425,7 @@ export function toElysiaRouteSchema<const Schemas extends RouteContractSchemas>(
   if (contract.cookie !== undefined) schema.cookie = contract.cookie;
   if (contract.responses !== undefined) schema.response = toElysiaResponseMap(contract.responses);
   else if (contract.response !== undefined) schema.response = toElysiaResponseSchema(contract.response);
-  return schema as unknown as InputSchema<never>;
+  return schema as unknown as InputSchema<never> & Record<string, unknown>;
 }
 
 /**
@@ -482,7 +482,7 @@ export function registerElysiaRoute<
     }
     return value;
   };
-  app.method(
+  app.route(
     route.method,
     route.path,
     toElysiaRouteSchema(route.contract),

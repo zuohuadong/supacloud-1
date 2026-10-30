@@ -5,6 +5,7 @@ import {
   scheduledFunctionsFromProjectConfig,
   type ScheduledFunctionConfig,
 } from "../utils/scheduled-function-config";
+import { syncProjectScheduledJobs } from "./scheduled-job-projection.service";
 
 export const MAX_SCHEDULES_PER_PROJECT = 20;
 
@@ -81,6 +82,7 @@ async function writeScheduledFunctions(
     RETURNING ref
   ` as Array<{ ref: string }>;
   if (!updatedProject) throw new Error("Locked Scheduled Function project disappeared before update");
+  await syncProjectScheduledJobs(transaction, ref, schedules);
 }
 
 function duplicateCreateField(

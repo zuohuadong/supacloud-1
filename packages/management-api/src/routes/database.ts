@@ -38,6 +38,7 @@ import { logger } from "../utils/logger";
 import { normalizeDatabaseSchema, normalizeRpcSchemas } from "../services/database-governance-input";
 import { runDatabaseLinter } from "../services/database-linter.service";
 import { readRpcCatalog } from "../services/database-rpc-catalog.service";
+import { readDatabaseRoleMatrix } from "../services/database-role-matrix.service";
 
 export type MigrationBody =
   | { query: string; version?: number | string }
@@ -1786,6 +1787,71 @@ export const databaseRoutes = new Elysia({ prefix: "/v1/projects/:ref/database" 
                 };
             }
         }
+    )
+    .get(
+        "/role-matrix",
+        {
+            params: t.Object({ ref: t.String({ minLength: 1 }) }),
+            query: t.Object({
+                schema: t.Optional(t.String({ maxLength: 63 })),
+                roles: t.Optional(t.String({ maxLength: 1_000 })),
+                tables: t.Optional(t.String({ maxLength: 4_000 })),
+                limit: t.Optional(t.String({ pattern: "^[0-9]+$" })),
+                offset: t.Optional(t.String({ pattern: "^[0-9]+$" })),
+            }),
+            detail: { tags: ["projects", "database"], summary: "Read the table/role/operation privilege matrix" },
+        },
+        async ({ params, query, set, request }) => {
+            const authError = await requireProjectOrAdminAuth(request, params.ref);
+            if (authError) return projectAuthResponse(authError, set);
+            const schema = query.schema?.trim() || "public";
+            if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(schema)) {
+                set.status = 400;
+                return { message: "schema is invalid", code: "400", status: 400 };
+            }
+            const requestedRoles = (query.roles?.trim() || "anon,authenticated,service_role")
+                .split(",").map((role) => role.trim()).filter(Boolean);
+            if (requestedRoles.length === 0 || requestedRoles.length > 12
+                || requestedRoles.some((role) => !/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(role) || role === "PUBLIC")) {
+                set.status = 400;
+                return { message: "roles must be 1-12 concrete role names", code: "400", status: 400 };
+            }
+            const requestedTables = query.tables === undefined
+                ? undefined
+                : query.tables.split(",").map((table) => table.trim()).filter(Boolean);
+            if (requestedTables !== undefined
+                && (requestedTables.length === 0 || requestedTables.length > 50
+                    || requestedTables.some((table) => !/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(table)))) {
+                set.status = 400;
+                return { message: "tables must be 1-50 concrete table names", code: "400", status: 400 };
+            }
+            const limit = query.limit === undefined ? 100 : Number(query.limit);
+            const offset = query.offset === undefined ? 0 : Number(query.offset);
+            if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200
+                || !Number.isSafeInteger(offset) || offset < 0 || offset > 1_000_000) {
+                set.status = 400;
+                return { message: "limit must be 1-200 and offset must be 0-1000000", code: "400", status: 400 };
+            }
+            const credentials = await getProjectDatabaseCredentials(params.ref);
+            if (!credentials) {
+                set.status = 404;
+                return { message: "Project database credentials not found", code: "404", status: 404 };
+            }
+            try {
+                return await readDatabaseRoleMatrix(getProjectDb(credentials.db_name), schema, requestedRoles, {
+                    ...(requestedTables === undefined ? {} : { tables: requestedTables }),
+                    limit,
+                    offset,
+                });
+            } catch (error: unknown) {
+                set.status = 400;
+                return {
+                    message: error instanceof Error ? error.message : "Role matrix failed",
+                    code: "400",
+                    status: 400,
+                };
+            }
+        },
     )
     .post(
         "/sql",

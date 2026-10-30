@@ -18,6 +18,12 @@ import { resolveProjectServiceRoleKey } from "../utils/service-role";
 import { getAuthRuntimeDescriptor } from "../services/auth-runtime.service";
 import { GOTRUE_USER_ID_PATTERN } from "../utils/project-user-lifecycle";
 import { beginRequestObservability } from "../utils/observability";
+import { setGraphqlAllowlistInvalidationHandler } from "../services/graphql-allowlist-invalidation.service";
+import {
+    parseGraphqlAllowlistConfig,
+    resolveAllowedGraphqlOperation,
+    type GraphqlAllowlistConfig,
+} from "../utils/graphql-allowlist";
 
 const MAX_ASYNC_BODY_BYTES = 256 * 1024;
 const MAX_TASK_LINK_ID_BYTES = 255;
@@ -102,6 +108,7 @@ let adminUserDeletionDispatcher = dispatchAdminUserDeletionThroughManagement;
 
 export function setSdkProxySqlForTests(sqlImpl?: SdkProxySql): void {
     sdkProxySql = sqlImpl || defaultSdkProxySql;
+    clearGraphqlAllowlistCache();
 }
 
 export function setSdkProxyFetchForTests(fetchImpl?: typeof fetch): void {
@@ -801,16 +808,130 @@ const sdkProxyRoutesBase = new Elysia({ prefix: "" })
                   .get("", { detail: { tags: ["sdk-proxy"], summary: "Proxy REST request" } }, handler).post("", { detail: { tags: ["sdk-proxy"], summary: "Proxy REST request" } }, handler).put("", { detail: { tags: ["sdk-proxy"], summary: "Proxy REST request" } }, handler).patch("", { detail: { tags: ["sdk-proxy"], summary: "Proxy REST request" } }, handler).delete("", { detail: { tags: ["sdk-proxy"], summary: "Proxy REST request" } }, handler).options("", handler);
     });
 
+const GRAPHQL_ALLOWLIST_CACHE_MS = 5_000;
+const GRAPHQL_ALLOWLIST_CACHE_MAX = 1_000;
+const graphqlAllowlistCache = new Map<string, { expiresAt: number; value: GraphqlAllowlistConfig | null }>();
+
+export function clearGraphqlAllowlistCache(ref?: string): void {
+    if (ref === undefined) graphqlAllowlistCache.clear();
+    else graphqlAllowlistCache.delete(ref);
+}
+
+setGraphqlAllowlistInvalidationHandler((ref) => clearGraphqlAllowlistCache(ref));
+
+async function readGraphqlAllowlist(ref: string): Promise<GraphqlAllowlistConfig | null> {
+    const now = Date.now();
+    const cached = graphqlAllowlistCache.get(ref);
+    if (cached && cached.expiresAt > now) return cached.value;
+    if (graphqlAllowlistCache.size >= GRAPHQL_ALLOWLIST_CACHE_MAX) {
+        const oldest = graphqlAllowlistCache.keys().next().value;
+        if (oldest !== undefined) graphqlAllowlistCache.delete(oldest);
+    }
+    const value = await loadGraphqlAllowlist(ref);
+    graphqlAllowlistCache.set(ref, { expiresAt: now + GRAPHQL_ALLOWLIST_CACHE_MS, value });
+    return value;
+}
+
+async function loadGraphqlAllowlist(ref: string): Promise<GraphqlAllowlistConfig | null> {
+    let rows: Array<{ config: unknown }>;
+    try {
+        rows = await sdkProxySql`
+            SELECT config FROM projects
+            WHERE ref = ${ref} AND deleted_at IS NULL
+            LIMIT 1
+        ` as Array<{ config: unknown }>;
+    } catch (error) {
+        logger.warn("[graphql] allowlist lookup failed; failing closed", {
+            ref,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return { mode: "enforce", operations: [] };
+    }
+    const configValue = rows[0]?.config;
+    if (!configValue || typeof configValue !== "object" || Array.isArray(configValue)) return null;
+    try {
+        return parseGraphqlAllowlistConfig((configValue as Record<string, unknown>)["graphql_allowlist"]);
+    } catch (error) {
+        logger.warn("[graphql] invalid project allowlist; failing closed", {
+            ref,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return { mode: "enforce", operations: [] };
+    }
+}
+
+function graphqlAllowlistResponse(status: 403, code: string, message: string): Response {
+    return new Response(JSON.stringify({ errors: [{ message, extensions: { code } }] }), {
+        status,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+}
+
+async function applyGraphqlAllowlist(
+    request: Request,
+    allowlist: GraphqlAllowlistConfig,
+): Promise<Request | Response> {
+    if (allowlist.mode !== "enforce") return request;
+    if (request.method !== "POST") {
+        return graphqlAllowlistResponse(403, "GRAPHQL_OPERATION_NOT_ALLOWED", "GraphQL allowlist requires a POST document");
+    }
+    const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (contentType !== "application/json") {
+        return graphqlAllowlistResponse(403, "GRAPHQL_OPERATION_NOT_ALLOWED", "GraphQL allowlist requires application/json");
+    }
+    let body: unknown;
+    try {
+        body = JSON.parse(await request.clone().text());
+    } catch {
+        return graphqlAllowlistResponse(403, "GRAPHQL_OPERATION_NOT_ALLOWED", "GraphQL allowlist requires a valid JSON request");
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return graphqlAllowlistResponse(403, "GRAPHQL_OPERATION_NOT_ALLOWED", "GraphQL allowlist requires an object request");
+    }
+    const record = body as Record<string, unknown>;
+    const query = typeof record.query === "string" && record.query.trim() ? record.query : undefined;
+    const operationName = typeof record.operationName === "string" ? record.operationName : undefined;
+    const extensions = record.extensions && typeof record.extensions === "object" && !Array.isArray(record.extensions)
+        ? record.extensions as Record<string, unknown>
+        : undefined;
+    const resolved = resolveAllowedGraphqlOperation({
+        ...(query === undefined ? {} : { query }),
+        ...(operationName === undefined ? {} : { operationName }),
+        ...(extensions === undefined ? {} : { extensions }),
+    }, allowlist);
+    if (!resolved) {
+        return graphqlAllowlistResponse(403, "GRAPHQL_OPERATION_NOT_ALLOWED", "GraphQL operation is not in the published allowlist");
+    }
+    if (query === resolved.query && (resolved.operationName === undefined || operationName === resolved.operationName)) {
+        return request;
+    }
+    const headers = new Headers(request.headers);
+    headers.delete("content-length");
+    return new Request(request.url, {
+        method: request.method,
+        headers,
+        body: JSON.stringify({
+            ...record,
+            query: resolved.query,
+            ...(resolved.operationName === undefined ? {} : { operationName: resolved.operationName }),
+        }),
+    });
+}
+
 const graphqlHandler = async ({ request }: any) => {
     const ref = await getProjectRef(request);
     if (!ref) return new Response(JSON.stringify({ message: 'Missing tenant reference' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const ports = await getTenantPorts(ref);
     if (!ports) return new Response(JSON.stringify({ message: 'Tenant backend not active' }), { status: 502, headers: { 'Content-Type': 'application/json' } });
-    
-    const url = new URL(request.url);
+
+    const allowlist = await readGraphqlAllowlist(ref);
+    const checkedRequest = allowlist === null ? request : await applyGraphqlAllowlist(request, allowlist);
+    if (checkedRequest instanceof Response) return checkedRequest;
+
+    const url = new URL(checkedRequest.url);
     const targetUrl = `http://127.0.0.1:${ports.pgrstPort}/rpc/graphql${url.search}`;
-    
-    return executeProxy(request, targetUrl, {
+
+    return executeProxy(checkedRequest, targetUrl, {
         ref,
         host: resolveProjectApiHost(ref, undefined),
         timeoutMs: config.restProxyTimeoutMs,

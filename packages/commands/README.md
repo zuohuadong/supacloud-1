@@ -94,6 +94,97 @@ and still enforce authorization and operation identity. A `rejected` receipt is
 distinct from a preflight `COMMAND_REJECTED` exception: it is durable evidence for
 that operation, not permission to generate a new key and blindly retry.
 
+### HTTP Actions
+
+`createHttpAction` is the transport adapter for an external REST action. It does
+not create a GraphQL resolver and it does not retry writes; compose it with
+`createExternalCommand` so the durable receipt, authorization, audit and
+reconciliation rules stay in one place.
+
+```ts
+import { createExternalCommand, createHttpAction, plaintextCommandInput } from "@supacloud/commands";
+
+const refundApi = createHttpAction<{ orderId: string }>({
+  url: "https://payments.example.com/v1/refunds",
+  allowedHosts: ["payments.example.com"],
+  headers: () => ({ authorization: `Bearer ${process.env.PAYMENTS_TOKEN}` }),
+  body: (input) => JSON.stringify({ orderId: input.orderId }),
+  lookup: { url: (input) => `https://payments.example.com/v1/refunds/${input.orderId}` },
+  timeoutMs: 10_000,
+  maxResponseBytes: 64 * 1024,
+  // Use the Management API's safeOutboundFetch when the destination is not a
+  // fixed, pre-validated host. This package has no Node-only DNS dependency.
+  fetch,
+});
+
+const refund = createExternalCommand({
+  store,
+  name: "payment.refund",
+  input,
+  result,
+  inputCodec: plaintextCommandInput,
+  authorize: () => "allow",
+  send: refundApi.send,
+  lookup: refundApi.lookup,
+  matches: (request, result) => request.orderId === result.orderId,
+  audit: { event: "payment.refunded", details: () => ({}) },
+  rejection: {
+    isDefinitiveWriteFailure: refundApi.isDefinitiveWriteFailure,
+    audit: { event: "payment.refund.rejected", details: () => ({}) },
+  },
+});
+```
+
+The adapter:
+
+- sends the durable `dispatchKey` as `idempotency-key` by default;
+- requires HTTPS except explicit loopback development;
+- supports exact host allowlisting and rejects embedded URL credentials;
+- bounds timeout and response bytes;
+- disables automatic redirect following;
+- maps non-2xx responses to `HttpActionError` with status and retryability;
+- optionally performs a read-only `lookup` for reconciliation, treating 404 as
+  "no remote record";
+- returns `isDefinitiveWriteFailure=false` unless the provider contract
+  explicitly permits classifying specific statuses as pre-effect rejections.
+
+`send` is called once per durable dispatch. Network failures, timeouts and
+ambiguous HTTP errors remain unknown and are reconciled through `lookup`; never
+add an automatic POST retry loop around the adapter. Large or secret payloads
+belong in Storage/domain tables, not in retryable queue messages.
+
+### Transactional Outbox
+
+`createOutboxDispatcher` is a storage-independent dispatcher for an
+application-owned outbox. SQL owns the table and the `FOR UPDATE SKIP LOCKED`
+claim; this package owns bounded retries, dead-lettering and topic routing.
+
+```ts
+import { createOutboxDispatcher, type OutboxStore } from "@supacloud/commands";
+
+const dispatcher = createOutboxDispatcher({
+  store,                       // claim/complete/retry/deadLetter
+  workerId: "app-worker-1",
+  maxRuns: 10,
+  handlers: {
+    "order.paid": async (message) => {
+      // Resolve the current entity by ID; do not trust stale payload state.
+      await deliverOrderPaid(message.idempotencyKey, message.payload);
+    },
+  },
+});
+
+while (!stopping) {
+  if (await dispatcher.runOnce() === 0) await sleep(1_000);
+}
+```
+
+The outbox row must be inserted in the same transaction as the business
+mutation. Delivery is at-least-once: consumers must deduplicate by
+`idempotencyKey`. Unknown topics are dead-lettered instead of retried forever.
+The SQL/table/worker template lives in
+[`docs/examples/outbox`](../../docs/examples/outbox/README.md).
+
 ## Recovery
 
 Interactive methods reauthorize the original actor. Worker `recover` requires

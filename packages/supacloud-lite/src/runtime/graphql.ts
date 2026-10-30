@@ -9,6 +9,15 @@ export interface GraphqlCapability {
   reason?: string
 }
 
+export interface GraphqlAllowedOperation {
+  /** Operation name emitted by the compiler manifest. */
+  name: string
+  /** SHA-256 of the GraphQL printed document. */
+  sha256: string
+  /** Stored document, required when clients send only a persisted-query hash. */
+  query?: string
+}
+
 export interface GraphqlOptions {
   /** true requires the extension at startup; false disables the endpoint; omitted auto-detects. */
   enabled?: boolean
@@ -16,6 +25,10 @@ export interface GraphqlOptions {
   statementTimeoutMs?: number
   slowQueryThresholdMs?: number
   onRequest?: (metric: GraphqlRequestMetric) => void
+  /** Optional persisted-operation allowlist. */
+  allowedOperations?: readonly GraphqlAllowedOperation[]
+  /** "enforce" rejects unlisted documents and supports APQ-style persisted hashes. */
+  allowlist?: "off" | "enforce"
 }
 
 export interface GraphqlRequestMetric {
@@ -70,12 +83,16 @@ export class GraphqlHandler {
   readonly timeoutMs: number
   readonly slowQueryThresholdMs: number
   private readonly onRequest?: (metric: GraphqlRequestMetric) => void
+  private readonly allowlistEnforced: boolean
+  private readonly allowedOperations: readonly GraphqlAllowedOperation[]
 
   constructor(private db: Database, private capability: GraphqlCapability, options: GraphqlOptions = {}, private schemas = ['public']) {
     this.maxBytes = positive(options.maxRequestBodyBytes ?? 1024 * 1024)
     this.timeoutMs = positive(options.statementTimeoutMs ?? 30_000)
     this.slowQueryThresholdMs = positive(options.slowQueryThresholdMs ?? 1_000)
     this.onRequest = options.onRequest
+    this.allowlistEnforced = options.allowlist === "enforce"
+    this.allowedOperations = normalizeAllowedOperations(options.allowedOperations ?? [])
   }
 
   async handle(request: Request, context: RequestContext): Promise<Response> {
@@ -103,13 +120,31 @@ export class GraphqlHandler {
         throw new ApiError(415, { message: 'GraphQL requests require application/json' })
       }
       const body: unknown = JSON.parse(await boundedBody(request, this.maxBytes))
-      if (!isObject(body) || typeof body.query !== 'string' || !body.query.trim() ||
+      if (!isObject(body) ||
+        (body.query != null && typeof body.query !== 'string') ||
         (body.variables != null && !isObject(body.variables)) ||
         (body.extensions != null && !isObject(body.extensions)) ||
         (body.operationName != null && typeof body.operationName !== 'string')) {
         throw new ApiError(400, { message: 'Invalid GraphQL request' })
       }
+      let document = typeof body.query === 'string' && body.query.trim() ? body.query : undefined
       operationName = body.operationName ?? undefined
+      if (this.allowlistEnforced) {
+        const resolved = await resolveAllowedGraphqlOperation({
+          ...(document === undefined ? {} : { query: document }),
+          ...(operationName === undefined ? {} : { operationName }),
+          ...(isObject(body.extensions) ? { extensions: body.extensions } : {}),
+        }, this.allowedOperations)
+        if (resolved === null) {
+          throw new ApiError(403, {
+            message: 'GraphQL operation is not in the published allowlist',
+            extensions: { code: 'GRAPHQL_OPERATION_NOT_ALLOWED' },
+          })
+        }
+        document = resolved.query
+        operationName = resolved.operationName ?? operationName
+      }
+      if (document === undefined) throw new ApiError(400, { message: 'Invalid GraphQL request' })
       const result = await this.db.withContext(context, async (query) => {
         await query<unknown>(`select set_config('statement_timeout', $1, true)`, [String(this.timeoutMs)])
         await query<unknown>(`select set_config('search_path', $1, true)`, [
@@ -117,7 +152,7 @@ export class GraphqlHandler {
         ])
         return query<unknown>(
           'select graphql.resolve($1::text, $2::jsonb, $3::text, $4::jsonb) as result',
-          [body.query, JSON.stringify(body.variables ?? {}), body.operationName ?? null, JSON.stringify(body.extensions ?? {})]
+          [document, JSON.stringify(body.variables ?? {}), operationName ?? null, JSON.stringify(body.extensions ?? {})]
         )
       })
       const row = result.rows[0]
@@ -126,7 +161,12 @@ export class GraphqlHandler {
       }
       return finish(response(200, row['result']))
     } catch (error) {
-      if (error instanceof ApiError) return finish(response(error.status, { errors: [{ message: error.message }] }))
+      if (error instanceof ApiError) return finish(response(error.status, {
+        errors: [{
+          message: error.message,
+          ...(isObject(error.body.extensions) ? { extensions: error.body.extensions } : {}),
+        }],
+      }))
       if (error instanceof SyntaxError) return finish(response(400, { errors: [{ message: 'Invalid JSON request' }] }))
       // Never return SQL, connection details or database exception text to callers.
       const code = errorProperty(error, 'errno') ?? errorProperty(error, 'code')
@@ -136,6 +176,88 @@ export class GraphqlHandler {
       )
     }
   }
+}
+
+export interface GraphqlAllowlistRequest {
+  query?: string
+  operationName?: string
+  extensions?: Record<string, unknown>
+}
+
+/**
+ * Resolve an allowlisted operation from either the document body or an
+ * APQ-style sha256 hash. The hash is always checked against the exact document
+ * bytes; an operationName alone is never sufficient.
+ */
+export async function resolveAllowedGraphqlOperation(
+  request: GraphqlAllowlistRequest,
+  allowed: readonly GraphqlAllowedOperation[],
+): Promise<{ query: string; operationName?: string } | null> {
+  if (allowed.length === 0) return null
+  const persistedHash = persistedQueryHash(request.extensions)
+  let entry: GraphqlAllowedOperation | undefined
+  if (persistedHash !== undefined) {
+    entry = allowed.find((candidate) => candidate.sha256 === persistedHash)
+    if (entry === undefined) return null
+  }
+  if (request.query !== undefined) {
+    const queryHash = await sha256Hex(request.query)
+    if (entry !== undefined && entry.sha256 !== queryHash) return null
+    entry ??= allowed.find((candidate) => candidate.sha256 === queryHash)
+  }
+  if (entry === undefined) return null
+  if (request.operationName !== undefined && request.operationName !== entry.name) return null
+  const query = request.query ?? entry.query
+  if (query === undefined || query.trim() === "") return null
+  return {
+    query,
+    ...(entry.name === undefined ? {} : { operationName: entry.name }),
+  }
+}
+
+export async function sha256Hex(value: string): Promise<string> {
+  // Bun's native hasher avoids the per-call async overhead of SubtleCrypto on
+  // the request hot path. Browser/other runtimes keep the Web Crypto fallback.
+  const bun = (globalThis as {
+    Bun?: { CryptoHasher: new (algorithm: string) => { update(data: string): void; digest(encoding: 'hex'): string } }
+  }).Bun
+  if (bun !== undefined) {
+    const hasher = new bun.CryptoHasher('sha256')
+    hasher.update(value)
+    return hasher.digest('hex')
+  }
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function persistedQueryHash(extensions: Record<string, unknown> | undefined): string | undefined {
+  const persisted = extensions?.['persistedQuery']
+  if (!isRecord(persisted)) return undefined
+  const hash = persisted['sha256Hash']
+  if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/i.test(hash)) return undefined
+  return hash.toLowerCase()
+}
+
+function normalizeAllowedOperations(entries: readonly GraphqlAllowedOperation[]): readonly GraphqlAllowedOperation[] {
+  const byHash = new Map<string, GraphqlAllowedOperation>()
+  for (const entry of entries) {
+    if (typeof entry.name !== 'string' || entry.name.trim() === '') {
+      throw new Error('GraphQL allowlist entries require a non-empty operation name')
+    }
+    if (typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(entry.sha256)) {
+      throw new Error('GraphQL allowlist entries require a lowercase sha256 hash')
+    }
+    if (entry.query !== undefined && (typeof entry.query !== 'string' || entry.query.trim() === '')) {
+      throw new Error('GraphQL allowlist query must be a non-empty string')
+    }
+    const sha256 = entry.sha256.toLowerCase()
+    const previous = byHash.get(sha256)
+    if (previous !== undefined && previous.name !== entry.name) {
+      throw new Error('GraphQL allowlist cannot map one document hash to multiple operation names')
+    }
+    byHash.set(sha256, { ...entry, sha256 })
+  }
+  return [...byHash.values()]
 }
 
 async function boundedBody(request: Request, limit: number): Promise<string> {

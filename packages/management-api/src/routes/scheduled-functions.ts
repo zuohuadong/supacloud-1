@@ -16,6 +16,7 @@ import {
   scheduledFunctionService,
   type ScheduledFunctionPatch,
 } from "../services/scheduled-function.service";
+import { listScheduledFunctionRuns } from "../services/scheduled-function-run.service";
 import { scheduledFunctionWorker } from "../workers/scheduled-function.worker";
 import { isValidScheduledFunctionCron } from "../utils/scheduled-function-cron";
 import {
@@ -116,7 +117,7 @@ function scheduleHeaders(
 }
 
 export const scheduledFunctionRoutes = new Elysia({ prefix: "/v1/projects/:ref/scheduled-functions" })
-  .beforeHandle(async ({ params, request }) => {
+  .onBeforeHandle(async ({ params, request }) => {
     if (!PROJECT_REF_PATTERN.test(params.ref)) return status(400, { error: "Project ref is invalid" });
     const authError = await authMiddleware.requireProjectOrAdminAuth(request, params.ref);
     if (authError) return status(authError.status, authError.body);
@@ -128,6 +129,26 @@ export const scheduledFunctionRoutes = new Elysia({ prefix: "/v1/projects/:ref/s
     if (!project) return status(404, { error: "Project not found" });
     const schedules = scheduledFunctionsFromProjectConfig(project.config).map(publicScheduledFunction);
     return { project_ref: params.ref, schedules };
+  })
+  .get("/:scheduleId/runs", {
+    query: t.Object({ limit: t.Optional(t.String()) }),
+    detail: { tags: ["scheduled-functions"], summary: "List scheduled function runs" },
+  }, async ({ params, query }) => {
+    if (!SCHEDULE_ID_PATTERN.test(params.scheduleId)) return status(400, { error: "Scheduled function ID is invalid" });
+    const project = await projectRepository.findByRef(params.ref);
+    if (!project) return status(404, { error: "Project not found" });
+    const schedule = scheduledFunctionsFromProjectConfig(project.config)
+      .find((candidate) => candidate.id === params.scheduleId);
+    if (!schedule) return status(404, { error: "Scheduled function not found" });
+    const requested = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isSafeInteger(requested) || requested < 1 || requested > 100) {
+      return status(400, { error: "limit must be an integer between 1 and 100" });
+    }
+    return {
+      project_ref: params.ref,
+      schedule_id: params.scheduleId,
+      runs: await listScheduledFunctionRuns(params.ref, params.scheduleId, requested),
+    };
   })
   .get("/:scheduleId", {
     detail: { tags: ["scheduled-functions"], summary: "Get a scheduled function" },
@@ -273,7 +294,7 @@ export const scheduledFunctionRoutes = new Elysia({ prefix: "/v1/projects/:ref/s
     const target = schedules.find((schedule) => schedule.id === params.scheduleId);
     if (!target) return status(404, { error: "Scheduled function not found" });
 
-    const invocation = await scheduledFunctionWorker.triggerOnce(params.ref, target);
+    const invocation = await scheduledFunctionWorker.triggerOnceWithRun(params.ref, target);
     if (!invocation.ok) return status(502, { error: invocation.error });
     return { triggered: true, project_ref: params.ref, schedule_id: params.scheduleId, status: invocation.status };
   });

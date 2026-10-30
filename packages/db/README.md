@@ -126,6 +126,39 @@ export const casesModule = defineDatabaseModule({
 });
 ```
 
+## Role Matrix
+
+`buildRoleMatrix` combines the declared modules with a `readCatalog()` result
+into one table x role x operation view. It is a read-only diagnostic: it does
+not create policies or grants, and a `yes` cell is not proof that a specific row
+is authorized.
+
+```ts
+import { buildRoleMatrix, formatRoleMatrix, readCatalog } from "@supacloud/db";
+
+const catalog = await readCatalog(executor, ["public"]);
+const report = buildRoleMatrix([caseDb], catalog, {
+  roles: ["anon", "authenticated", "service_role"],
+  bypassRlsRoles: ["service_role"],
+});
+
+console.log(formatRoleMatrix(report));
+if (!report.ok) throw new Error("Role matrix has blocking issues");
+```
+
+The report distinguishes:
+
+- `yes`: grant + applicable policy (or an explicit RLS bypass role);
+- `bypass`: effective through an explicit `bypassRlsRoles` entry;
+- `grant`: grant exists but RLS has no applicable policy;
+- `policy`: policy exists but the role lacks the grant;
+- `-`: neither.
+
+Issues include `missing-table`, `rls-disabled`, `rls-no-policy`,
+`public-grant`, `grant-without-policy` and `policy-without-grant`. Pass real
+custom roles explicitly; `PUBLIC` is rejected as a concrete role because it is
+not a role you can preview.
+
 ## API
 
 | 导出 | 说明 |

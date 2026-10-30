@@ -55,6 +55,7 @@
       labelKey: "DatabaseNav.access",
       items: [
         { id: "roles", labelKey: "Roles.title", icon: Users },
+        { id: "role-matrix", labelKey: "RoleMatrix.title", icon: ShieldCheck },
         { id: "column-privileges", labelKey: "ColumnPrivileges.title", icon: ShieldCheck },
         { id: "rls-tester", labelKey: "DatabaseObjects.rls_tester", icon: FlaskConical },
         { id: "temporary-access", labelKey: "DatabaseObjects.temporary_access", icon: KeyRound },

@@ -71,9 +71,7 @@ export function isValidScheduledFunctionCron(expression: unknown): boolean {
   return parsedCron(expression) !== null;
 }
 
-export function scheduledFunctionCronMatches(expression: unknown, date: Date): boolean {
-  const cron = parsedCron(expression);
-  if (!cron) return false;
+function parsedCronMatches(cron: ParsedCron, date: Date): boolean {
   const [minute, hour, dayOfMonth, month, dayOfWeek] = cron.fields;
   const minuteMatches = fieldMatches(minute, date.getMinutes());
   const hourMatches = fieldMatches(hour, date.getHours());
@@ -86,4 +84,27 @@ export function scheduledFunctionCronMatches(expression: unknown, date: Date): b
     ? dayOfMonthMatches || dayOfWeekMatches
     : dayOfMonthMatches && dayOfWeekMatches;
   return minuteMatches && hourMatches && monthMatches && dayMatches;
+}
+
+export function scheduledFunctionCronMatches(expression: unknown, date: Date): boolean {
+  const cron = parsedCron(expression);
+  return cron ? parsedCronMatches(cron, date) : false;
+}
+
+const MAX_NEXT_RUN_SEARCH_MINUTES = 60 * 24 * 366 * 5;
+
+/**
+ * Find the first matching minute strictly after `after`. Invalid expressions
+ * return null. The bounded five-year search covers annual and leap-day cron
+ * entries without allowing a malformed schedule to spin forever.
+ */
+export function nextScheduledFunctionRunAt(expression: unknown, after: Date): Date | null {
+  const cron = parsedCron(expression);
+  if (!cron) return null;
+  let candidate = new Date(Math.floor(after.getTime() / 60_000) * 60_000 + 60_000);
+  for (let index = 0; index < MAX_NEXT_RUN_SEARCH_MINUTES; index += 1) {
+    if (parsedCronMatches(cron, candidate)) return candidate;
+    candidate = new Date(candidate.getTime() + 60_000);
+  }
+  return null;
 }

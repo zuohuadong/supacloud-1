@@ -8,6 +8,7 @@ import { Users, Package, Zap, Braces, Hash, FolderOpen, CalendarClock, Radio, We
 
   const subPages = $derived([
     { title: $t("Roles.title"), desc: $t("Roles.subtitle"), icon: Users, href: `/project/${projectRef}/database/roles` },
+    { title: $t("RoleMatrix.title"), desc: $t("RoleMatrix.subtitle"), icon: ShieldCheck, href: `/project/${projectRef}/database/role-matrix` },
     { title: $t("Extensions.title"), desc: $t("Extensions.subtitle"), icon: Package, href: `/project/${projectRef}/database/extensions` },
     { title: $t("Triggers.title"), desc: $t("Triggers.subtitle"), icon: Zap, href: `/project/${projectRef}/database/triggers` },
     { title: $t("DbFunctions.title"), desc: $t("DbFunctions.subtitle"), icon: Braces, href: `/project/${projectRef}/database/functions` },

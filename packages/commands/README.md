@@ -94,9 +94,9 @@ and still enforce authorization and operation identity. A `rejected` receipt is
 distinct from a preflight `COMMAND_REJECTED` exception: it is durable evidence for
 that operation, not permission to generate a new key and blindly retry.
 
-### HTTP Actions
+### Outbound HTTP
 
-`createHttpAction` is the transport adapter for an external REST action. It does
+`createHttpAction` is the transport adapter for an external REST endpoint. Product surfaces should call this **Outbound HTTP** or a connector, not "Actions"; it is an internal delivery primitive, not a GraphQL resolver. It does
 not create a GraphQL resolver and it does not retry writes; compose it with
 `createExternalCommand` so the durable receipt, authorization, audit and
 reconciliation rules stay in one place.

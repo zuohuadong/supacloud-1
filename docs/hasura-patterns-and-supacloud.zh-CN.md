@@ -627,6 +627,14 @@ Hasura Actions 的价值是：
 
 SupaCloud 不需要“GraphQL 字段 -> REST webhook”这一层，但需要同样的**契约、授权、观测和出站治理**。
 
+#### 产品决策：不做 Actions 一级产品
+
+- **不新增**“Hasura Actions 等价物”菜单、metadata 或第二套 GraphQL resolver。
+- `createHttpAction` 保留为内部出站能力，统一归入 **Webhooks / Connectors / Outbound HTTP**。
+- 面向用户的产品入口是 Webhooks 的投递历史、重试、回放和测试，而不是“配置一个 Action”。
+- 自定义代码继续走 Edge Functions；事务内逻辑走 PostgreSQL RPC；外部 REST 只作为受治理的出站适配器。
+- 只有出现明确的付费/设计伙伴需求，才评估“Custom Endpoint”，并且仍然复用函数、鉴权、限流、allowlist 和审计，而不是复制 Hasura 的 metadata 引擎。
+
 #### 建议模型
 
 **A. 业务动作：Command 优先**

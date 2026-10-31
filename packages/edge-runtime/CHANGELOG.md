@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.30.0](https://github.com/zuohuadong/supacloud-1/compare/edge-runtime-v0.29.1...edge-runtime-v0.30.0) (2026-10-31)
+
+
+### Features
+
+* **app:** add governed reactive event streams and lifecycle signals ([38a26e2](https://github.com/zuohuadong/supacloud-1/commit/38a26e2d3b83226a7488df2ef4f1f5714573aeb2))
+* **cli:** support configurable upload body limits for edge functions and host install ([#1274](https://github.com/zuohuadong/supacloud-1/issues/1274)) ([5f9e85a](https://github.com/zuohuadong/supacloud-1/commit/5f9e85aa502e06e739fa9e6d43e2bcc1f94d721a))
+* **elysia:** Elysia 2 AOT evaluation and end-to-end typing architecture ([#1654](https://github.com/zuohuadong/supacloud-1/issues/1654)) ([39ee49f](https://github.com/zuohuadong/supacloud-1/commit/39ee49f760e85e789c43c1d18cf5729db592f6bc))
+* **functions:** publish atomic project release manifests ([#1215](https://github.com/zuohuadong/supacloud-1/issues/1215)) ([e4c582f](https://github.com/zuohuadong/supacloud-1/commit/e4c582f55a88e47cf4795cfe8e42b8672791dce8))
+* integrate application delivery and platform runtime support ([#1453](https://github.com/zuohuadong/supacloud-1/issues/1453)) ([68594fb](https://github.com/zuohuadong/supacloud-1/commit/68594fb67937091bf274a02b33da0d51d31d7b3a))
+* migrate compiler and strengthen type safety ([81ffb9d](https://github.com/zuohuadong/supacloud-1/commit/81ffb9dae9a09b5561f90e655f1503514d3fe1d7))
+* **observability:** trace request and background function execution ([#1212](https://github.com/zuohuadong/supacloud-1/issues/1212)) ([589b1e8](https://github.com/zuohuadong/supacloud-1/commit/589b1e8ac07ea9e91f4a486221a90bf952b2d92d))
+* **pgredis:** add batch mget/mset cache operations ([#1417](https://github.com/zuohuadong/supacloud-1/issues/1417)) ([ce57b21](https://github.com/zuohuadong/supacloud-1/commit/ce57b21089d29d49653f9f949aa54ad784843707))
+* **platform:** migrate to Elysia rc.0 and harden runtime governance ([cf867e6](https://github.com/zuohuadong/supacloud-1/commit/cf867e63c5e5a3b586ae945467d20da1bef721b7))
+
+
+### Bug Fixes
+
+* **edge-runtime:** avoid recycling on idle memory plateau ([#1520](https://github.com/zuohuadong/supacloud-1/issues/1520)) ([1241ee8](https://github.com/zuohuadong/supacloud-1/commit/1241ee83ad1b6f411713a3c00923fdcb3c79de58))
+* **edge-runtime:** honor configured upload limit in HTTP listener ([#1273](https://github.com/zuohuadong/supacloud-1/issues/1273)) ([cbd1131](https://github.com/zuohuadong/supacloud-1/commit/cbd11311471ac31c8aa605f00ac5b503c3d60160))
+* **edge-runtime:** preserve guarded constructor identity ([#1680](https://github.com/zuohuadong/supacloud-1/issues/1680)) ([2bae9a1](https://github.com/zuohuadong/supacloud-1/commit/2bae9a12dd276bd2d4822e7fb2f978374a2e40d0))
+* **edge-runtime:** recover from sustained memory pressure ([#1362](https://github.com/zuohuadong/supacloud-1/issues/1362)) ([3176007](https://github.com/zuohuadong/supacloud-1/commit/31760071f6e32031ffe1c18a1d6d04ac5fdf21c0))
+* pin npm registry for reproducible installs in remaining packages ([#1414](https://github.com/zuohuadong/supacloud-1/issues/1414)) ([8110f3c](https://github.com/zuohuadong/supacloud-1/commit/8110f3c889ac48bc8e4cee35eb37ce7406d35587))
+
+
+### Miscellaneous Chores
+
+* adopt AGPL-3.0-only licensing ([#1481](https://github.com/zuohuadong/supacloud-1/issues/1481)) ([8787ad9](https://github.com/zuohuadong/supacloud-1/commit/8787ad9466ebba8f487d28bf62d5f79a220b0ab8))
+* **deps:** complete @sinclair/typebox to typebox 1.3.34 migration ([#1655](https://github.com/zuohuadong/supacloud-1/issues/1655)) ([87d1133](https://github.com/zuohuadong/supacloud-1/commit/87d1133c0fa0eadf145afc6c3747f693e3e36200))
+* **deps:** upgrade Bun runtime baseline from 1.4.0 to 1.4.2 ([#1271](https://github.com/zuohuadong/supacloud-1/issues/1271)) ([f53aee5](https://github.com/zuohuadong/supacloud-1/commit/f53aee52e93c25e017e9c693a920de5752fe3ddc))
+* release main ([#1156](https://github.com/zuohuadong/supacloud-1/issues/1156)) ([3827ba0](https://github.com/zuohuadong/supacloud-1/commit/3827ba09bc1dd1c37e5075773900e2005aed3e0f))
+* release main ([#1214](https://github.com/zuohuadong/supacloud-1/issues/1214)) ([645b23e](https://github.com/zuohuadong/supacloud-1/commit/645b23e7801338e099733e715cd50c2113fb32a0))
+* release main ([#1219](https://github.com/zuohuadong/supacloud-1/issues/1219)) ([3bfbe4b](https://github.com/zuohuadong/supacloud-1/commit/3bfbe4bd665a94166a201abc1131bc099df8fa8d))
+* release main ([#1272](https://github.com/zuohuadong/supacloud-1/issues/1272)) ([8b5c40d](https://github.com/zuohuadong/supacloud-1/commit/8b5c40d442a3c2b7981b084d31da6c60f2d8db1c))
+* release main ([#1275](https://github.com/zuohuadong/supacloud-1/issues/1275)) ([74f8b25](https://github.com/zuohuadong/supacloud-1/commit/74f8b2592900679c8d25fa9bccd4a6b90f37ae39))
+* release main ([#1361](https://github.com/zuohuadong/supacloud-1/issues/1361)) ([2359236](https://github.com/zuohuadong/supacloud-1/commit/23592368c04a7f876b0e50b00cede6ec5b87e4db))
+* release main ([#1413](https://github.com/zuohuadong/supacloud-1/issues/1413)) ([0b0f637](https://github.com/zuohuadong/supacloud-1/commit/0b0f637b9eed202f8aa64a3d67ad6469b468bdb9))
+* release main ([#1418](https://github.com/zuohuadong/supacloud-1/issues/1418)) ([8338966](https://github.com/zuohuadong/supacloud-1/commit/83389661ceee07141c7dfad14a7ccd47f6940943))
+* release main ([#1455](https://github.com/zuohuadong/supacloud-1/issues/1455)) ([e1b923e](https://github.com/zuohuadong/supacloud-1/commit/e1b923e1ed08c08c9439ea01a1774251911b4b73))
+* release main ([#1484](https://github.com/zuohuadong/supacloud-1/issues/1484)) ([41b3e72](https://github.com/zuohuadong/supacloud-1/commit/41b3e72d25dd8b1ea1d3dea5b75c90bdea9be797))
+* release main ([#1507](https://github.com/zuohuadong/supacloud-1/issues/1507)) ([b7f3a59](https://github.com/zuohuadong/supacloud-1/commit/b7f3a59885596742a8b11fc808d898165a8989ec))
+* release main ([#1561](https://github.com/zuohuadong/supacloud-1/issues/1561)) ([3ee71e3](https://github.com/zuohuadong/supacloud-1/commit/3ee71e301e7a5499780b45ec6c64e53698000029))
+* release main ([#1657](https://github.com/zuohuadong/supacloud-1/issues/1657)) ([1a3f7ff](https://github.com/zuohuadong/supacloud-1/commit/1a3f7ff901f05dda38ed4827d70a91a4acccd8b3))
+* release main ([#1681](https://github.com/zuohuadong/supacloud-1/issues/1681)) ([c804f96](https://github.com/zuohuadong/supacloud-1/commit/c804f96c450e193f37f182f81002fd5ff65dfe68))
+
 ## [0.29.1](https://github.com/vibeunion/supacloud/compare/edge-runtime-v0.29.0...edge-runtime-v0.29.1) (2026-10-07)
 
 

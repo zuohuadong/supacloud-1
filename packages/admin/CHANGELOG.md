@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.25.0](https://github.com/zuohuadong/supacloud-1/compare/admin-v0.24.2...admin-v0.25.0) (2026-10-31)
+
+
+### Features
+
+* **app:** add governed reactive event streams and lifecycle signals ([38a26e2](https://github.com/zuohuadong/supacloud-1/commit/38a26e2d3b83226a7488df2ef4f1f5714573aeb2))
+* **cli:** support configurable upload body limits for edge functions and host install ([#1274](https://github.com/zuohuadong/supacloud-1/issues/1274)) ([5f9e85a](https://github.com/zuohuadong/supacloud-1/commit/5f9e85aa502e06e739fa9e6d43e2bcc1f94d721a))
+* **cli:** support unrestricted manual file upload for storage ([#1276](https://github.com/zuohuadong/supacloud-1/issues/1276)) ([53eae1f](https://github.com/zuohuadong/supacloud-1/commit/53eae1f1af3014c014b5cb65127cb9fff2291696))
+* integrate application delivery and platform runtime support ([#1453](https://github.com/zuohuadong/supacloud-1/issues/1453)) ([68594fb](https://github.com/zuohuadong/supacloud-1/commit/68594fb67937091bf274a02b33da0d51d31d7b3a))
+* migrate compiler and strengthen type safety ([81ffb9d](https://github.com/zuohuadong/supacloud-1/commit/81ffb9dae9a09b5561f90e655f1503514d3fe1d7))
+
+
+### Bug Fixes
+
+* **admin:** allow local transport proxy for offline release downloads ([#1281](https://github.com/zuohuadong/supacloud-1/issues/1281)) ([fa2137d](https://github.com/zuohuadong/supacloud-1/commit/fa2137d200ad5a44bbd2e0da558ebe93369f167a))
+* **admin:** republish package metadata ([#1398](https://github.com/zuohuadong/supacloud-1/issues/1398)) ([b4e0357](https://github.com/zuohuadong/supacloud-1/commit/b4e035768c4b56634af71b426bf458808cb650cd))
+* **admin:** resolve upgrade release versions with valid jq patterns ([#1237](https://github.com/zuohuadong/supacloud-1/issues/1237)) ([45a26d2](https://github.com/zuohuadong/supacloud-1/commit/45a26d2bfb1709ed9acad2c9220e577ae4355fa5))
+* **deps,perf:** replace Bun native APIs and resolve audit vulnerabilities ([#1667](https://github.com/zuohuadong/supacloud-1/issues/1667)) ([06a9199](https://github.com/zuohuadong/supacloud-1/commit/06a91990c754ce586f2a2353f253dc50f4fa0f98))
+
+
+### Elegance & Refactoring
+
+* **admin:** import shared CLI tools through the package contract ([#1371](https://github.com/zuohuadong/supacloud-1/issues/1371)) ([6a225e4](https://github.com/zuohuadong/supacloud-1/commit/6a225e40ccacd5455542a843a82cf59d46e75e70))
+
+
+### Miscellaneous Chores
+
+* adopt AGPL-3.0-only licensing ([#1481](https://github.com/zuohuadong/supacloud-1/issues/1481)) ([8787ad9](https://github.com/zuohuadong/supacloud-1/commit/8787ad9466ebba8f487d28bf62d5f79a220b0ab8))
+* **deps:** complete @sinclair/typebox to typebox 1.3.34 migration ([#1655](https://github.com/zuohuadong/supacloud-1/issues/1655)) ([87d1133](https://github.com/zuohuadong/supacloud-1/commit/87d1133c0fa0eadf145afc6c3747f693e3e36200))
+* **deps:** upgrade Bun runtime baseline from 1.4.0 to 1.4.2 ([#1271](https://github.com/zuohuadong/supacloud-1/issues/1271)) ([f53aee5](https://github.com/zuohuadong/supacloud-1/commit/f53aee52e93c25e017e9c693a920de5752fe3ddc))
+* release main ([#1156](https://github.com/zuohuadong/supacloud-1/issues/1156)) ([3827ba0](https://github.com/zuohuadong/supacloud-1/commit/3827ba09bc1dd1c37e5075773900e2005aed3e0f))
+* release main ([#1238](https://github.com/zuohuadong/supacloud-1/issues/1238)) ([13f8362](https://github.com/zuohuadong/supacloud-1/commit/13f8362d3aeca8da91d16cfb840e2b1428914a1c))
+* release main ([#1272](https://github.com/zuohuadong/supacloud-1/issues/1272)) ([8b5c40d](https://github.com/zuohuadong/supacloud-1/commit/8b5c40d442a3c2b7981b084d31da6c60f2d8db1c))
+* release main ([#1275](https://github.com/zuohuadong/supacloud-1/issues/1275)) ([74f8b25](https://github.com/zuohuadong/supacloud-1/commit/74f8b2592900679c8d25fa9bccd4a6b90f37ae39))
+* release main ([#1282](https://github.com/zuohuadong/supacloud-1/issues/1282)) ([eded86a](https://github.com/zuohuadong/supacloud-1/commit/eded86a6589cc274939d4cadc67f629cd3f17865))
+* release main ([#1361](https://github.com/zuohuadong/supacloud-1/issues/1361)) ([2359236](https://github.com/zuohuadong/supacloud-1/commit/23592368c04a7f876b0e50b00cede6ec5b87e4db))
+* release main ([#1399](https://github.com/zuohuadong/supacloud-1/issues/1399)) ([a2a3600](https://github.com/zuohuadong/supacloud-1/commit/a2a36005421d7436f01553756449fb5e95beb052))
+* release main ([#1455](https://github.com/zuohuadong/supacloud-1/issues/1455)) ([e1b923e](https://github.com/zuohuadong/supacloud-1/commit/e1b923e1ed08c08c9439ea01a1774251911b4b73))
+* release main ([#1484](https://github.com/zuohuadong/supacloud-1/issues/1484)) ([41b3e72](https://github.com/zuohuadong/supacloud-1/commit/41b3e72d25dd8b1ea1d3dea5b75c90bdea9be797))
+* release main ([#1561](https://github.com/zuohuadong/supacloud-1/issues/1561)) ([3ee71e3](https://github.com/zuohuadong/supacloud-1/commit/3ee71e301e7a5499780b45ec6c64e53698000029))
+* release main ([#1657](https://github.com/zuohuadong/supacloud-1/issues/1657)) ([1a3f7ff](https://github.com/zuohuadong/supacloud-1/commit/1a3f7ff901f05dda38ed4827d70a91a4acccd8b3))
+* release main ([#1668](https://github.com/zuohuadong/supacloud-1/issues/1668)) ([a7ce18b](https://github.com/zuohuadong/supacloud-1/commit/a7ce18b73e0a2e93df664fb8da08cd40f3bdae82))
+
 ## [0.24.2](https://github.com/vibeunion/supacloud/compare/admin-v0.24.1...admin-v0.24.2) (2026-10-06)
 
 

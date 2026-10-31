@@ -1,5 +1,89 @@
 # Changelog
 
+## [0.50.0](https://github.com/zuohuadong/supacloud-1/compare/web-console-v0.49.2...web-console-v0.50.0) (2026-10-31)
+
+
+### Features
+
+* add agent backend authoring, runtime and observability workflows ([#1648](https://github.com/zuohuadong/supacloud-1/issues/1648)) ([59a66d1](https://github.com/zuohuadong/supacloud-1/commit/59a66d184a47d19c7f8895f24a6ba2c7e74e93d0))
+* **app:** add governed reactive event streams and lifecycle signals ([38a26e2](https://github.com/zuohuadong/supacloud-1/commit/38a26e2d3b83226a7488df2ef4f1f5714573aeb2))
+* **auth:** add project OAuth Server console and GoTrue admin proxy ([#1293](https://github.com/zuohuadong/supacloud-1/issues/1293)) ([2cbc565](https://github.com/zuohuadong/supacloud-1/commit/2cbc5657ee59d173869cbf36d979b14babd81e56))
+* **console:** add read-only application dashboard ([#1493](https://github.com/zuohuadong/supacloud-1/issues/1493)) ([38bf51a](https://github.com/zuohuadong/supacloud-1/commit/38bf51a6424ed5c5cc45361e4d89e77be31eb927))
+* **console:** safely inspect delivered application development context ([#1522](https://github.com/zuohuadong/supacloud-1/issues/1522)) ([db25fc2](https://github.com/zuohuadong/supacloud-1/commit/db25fc2844a18aea660e5fdd5249486f40ec1458))
+* establish single-node delivery baseline ([#1632](https://github.com/zuohuadong/supacloud-1/issues/1632)) ([926de6c](https://github.com/zuohuadong/supacloud-1/commit/926de6c6c72940f7c03e046908ef446c54d37621))
+* **extensions:** manage canonical pgflow installation and pause state ([#1331](https://github.com/zuohuadong/supacloud-1/issues/1331)) ([aa666eb](https://github.com/zuohuadong/supacloud-1/commit/aa666eb48130508f39a41523d8aeefdf25912e9a))
+* **graphql:** add compatibility governance pack ([24c58dc](https://github.com/zuohuadong/supacloud-1/commit/24c58dcc2a5ae94e15065297be38d37d0941ed43))
+* **hosting:** add frontend hosting environments, versions, and console ([#1292](https://github.com/zuohuadong/supacloud-1/issues/1292)) ([4a5dc78](https://github.com/zuohuadong/supacloud-1/commit/4a5dc78cbb827ff22e5b714c3311c377db44ea67))
+* **management-api:** validate the project dashboard summary route ([f1e7bc1](https://github.com/zuohuadong/supacloud-1/commit/f1e7bc14911d2a97dd9ac17414bc681e68bfa991))
+* migrate compiler and strengthen type safety ([81ffb9d](https://github.com/zuohuadong/supacloud-1/commit/81ffb9dae9a09b5561f90e655f1503514d3fe1d7))
+* **platform:** connect deployment evidence to console and mcp ([f86af1c](https://github.com/zuohuadong/supacloud-1/commit/f86af1c4be4346452cdc580f51ced7a38555d0dc))
+* **platform:** migrate to Elysia rc.0 and harden runtime governance ([cf867e6](https://github.com/zuohuadong/supacloud-1/commit/cf867e63c5e5a3b586ae945467d20da1bef721b7))
+* **web-console:** add validated project data-layer contracts ([#1381](https://github.com/zuohuadong/supacloud-1/issues/1381)) ([4da077e](https://github.com/zuohuadong/supacloud-1/commit/4da077e0107101bc49b30304c3fe7e3b58c86ce4))
+* **web-console:** drive JWT settings through a validated contract ([#1392](https://github.com/zuohuadong/supacloud-1/issues/1392)) ([272d637](https://github.com/zuohuadong/supacloud-1/commit/272d6372c3b8085846da2c4cbac2c97f798e24a3))
+* **web-console:** drive project pooling through the validated state API ([2316899](https://github.com/zuohuadong/supacloud-1/commit/23168990d8a8c0820a84acdae83804449b2210d9))
+* **web-console:** drive service controls through the validated contract ([085efd8](https://github.com/zuohuadong/supacloud-1/commit/085efd8780a44b0a14fc583ef013499a7ed66576))
+* **web-console:** harden auth settings boundaries ([a2987bd](https://github.com/zuohuadong/supacloud-1/commit/a2987bd50ef0885b4b034aeb4a57b0ce4a913817))
+* **web-console:** persist SQL editor drafts and typed table forms ([#1294](https://github.com/zuohuadong/supacloud-1/issues/1294)) ([1eadf8b](https://github.com/zuohuadong/supacloud-1/commit/1eadf8b2001506d02d4d978ee223168705a60a90))
+* **web-console:** preserve typed svadmin resource reads ([#1656](https://github.com/zuohuadong/supacloud-1/issues/1656)) ([2d83827](https://github.com/zuohuadong/supacloud-1/commit/2d8382736a4d877d52e0d03705819bc952bf3a0c))
+* **web-console:** productize durable webhook delivery ([9288fc0](https://github.com/zuohuadong/supacloud-1/commit/9288fc064a37176363e7d2f370ec658ed73e4e40))
+* **web-console:** rebuild the project overview on validated contracts ([f28428a](https://github.com/zuohuadong/supacloud-1/commit/f28428ad9d2ec55d0c742f2fe539f1bc769e2fab))
+* **web-console:** rebuild the task center on validated contracts ([#1391](https://github.com/zuohuadong/supacloud-1/issues/1391)) ([c4d2b8f](https://github.com/zuohuadong/supacloud-1/commit/c4d2b8f0f076ed8c1dc3d3ed6d22c1532c6ae66a))
+* **web-console:** upgrade svadmin and type auth mutations ([#1662](https://github.com/zuohuadong/supacloud-1/issues/1662)) ([b7bc46c](https://github.com/zuohuadong/supacloud-1/commit/b7bc46cb3aeb57decd9265699cc66a6dd8c0d4ea))
+* **web-console:** upgrade SVAdmin dependencies and Tailwind v4 theme styles ([#1191](https://github.com/zuohuadong/supacloud-1/issues/1191)) ([67fa640](https://github.com/zuohuadong/supacloud-1/commit/67fa640ccc617c7131f49132a92b346151aeb711))
+* **web-console:** wire dashboard and project routes to validated contracts ([#1384](https://github.com/zuohuadong/supacloud-1/issues/1384)) ([15f5913](https://github.com/zuohuadong/supacloud-1/commit/15f5913516ca128dac03177533072bd1b7f5eb3d))
+
+
+### Bug Fixes
+
+* **compiler:** align migration dependency pin with released elysia 0.15.0 ([#1324](https://github.com/zuohuadong/supacloud-1/issues/1324)) ([459ee84](https://github.com/zuohuadong/supacloud-1/commit/459ee840ade78b7f5891a678ef8ccbdd29631a30))
+* **deps,perf:** replace Bun native APIs and resolve audit vulnerabilities ([#1667](https://github.com/zuohuadong/supacloud-1/issues/1667)) ([06a9199](https://github.com/zuohuadong/supacloud-1/commit/06a91990c754ce586f2a2353f253dc50f4fa0f98))
+* **web-console:** enforce typed auth URL configuration contract ([#1663](https://github.com/zuohuadong/supacloud-1/issues/1663)) ([958efa9](https://github.com/zuohuadong/supacloud-1/commit/958efa9a87fdb143578343a8946b1e5e4d248d71))
+* **web-console:** isolate table rows from the active project context ([f2ecdaf](https://github.com/zuohuadong/supacloud-1/commit/f2ecdaf73086d4b4dba1f8e1a6bfaf7d6f220863))
+
+
+### Performance Improvements
+
+* **compiler,web-console:** optimize I/O with Bun APIs, Vite pre-bundling, and graph algorithms ([#1246](https://github.com/zuohuadong/supacloud-1/issues/1246)) ([1db9458](https://github.com/zuohuadong/supacloud-1/commit/1db9458bb620c32476597c5bf795d00e63700559))
+
+
+### Documentation
+
+* **web-console:** clarify svadmin package provenance ([#1319](https://github.com/zuohuadong/supacloud-1/issues/1319)) ([d0e4379](https://github.com/zuohuadong/supacloud-1/commit/d0e437960fef8021d967947290e59a392d42df68))
+
+
+### Miscellaneous Chores
+
+* adopt AGPL-3.0-only licensing ([#1481](https://github.com/zuohuadong/supacloud-1/issues/1481)) ([8787ad9](https://github.com/zuohuadong/supacloud-1/commit/8787ad9466ebba8f487d28bf62d5f79a220b0ab8))
+* **deps:** complete @sinclair/typebox to typebox 1.3.34 migration ([#1655](https://github.com/zuohuadong/supacloud-1/issues/1655)) ([87d1133](https://github.com/zuohuadong/supacloud-1/commit/87d1133c0fa0eadf145afc6c3747f693e3e36200))
+* **deps:** patch high-severity audit advisories in web-console ([#1521](https://github.com/zuohuadong/supacloud-1/issues/1521)) ([1be1ece](https://github.com/zuohuadong/supacloud-1/commit/1be1ece3f4fa150508e4f54c6dc9d84a7868057f))
+* **deps:** upgrade SVAdmin packages to npm latest ([#1295](https://github.com/zuohuadong/supacloud-1/issues/1295)) ([6c9a406](https://github.com/zuohuadong/supacloud-1/commit/6c9a4063d6d05b6bf57d63d5a03b134c95174ec0))
+* release main ([#1156](https://github.com/zuohuadong/supacloud-1/issues/1156)) ([3827ba0](https://github.com/zuohuadong/supacloud-1/commit/3827ba09bc1dd1c37e5075773900e2005aed3e0f))
+* release main ([#1192](https://github.com/zuohuadong/supacloud-1/issues/1192)) ([1e505e1](https://github.com/zuohuadong/supacloud-1/commit/1e505e1713c918c07596110c2078cb88bdc5e9bd))
+* release main ([#1247](https://github.com/zuohuadong/supacloud-1/issues/1247)) ([b21ffe3](https://github.com/zuohuadong/supacloud-1/commit/b21ffe3dfec4d8513dfcb1ff59092b4f89ff344f))
+* release main ([#1296](https://github.com/zuohuadong/supacloud-1/issues/1296)) ([1cb6cb3](https://github.com/zuohuadong/supacloud-1/commit/1cb6cb302064ecedba544886314dbf31d4494d91))
+* release main ([#1320](https://github.com/zuohuadong/supacloud-1/issues/1320)) ([cc7a100](https://github.com/zuohuadong/supacloud-1/commit/cc7a100f892da8e4981161d05e3be46ddbef2aa8))
+* release main ([#1330](https://github.com/zuohuadong/supacloud-1/issues/1330)) ([95384f8](https://github.com/zuohuadong/supacloud-1/commit/95384f8db80b2706b30953f26944cc681f810543))
+* release main ([#1359](https://github.com/zuohuadong/supacloud-1/issues/1359)) ([750b0b2](https://github.com/zuohuadong/supacloud-1/commit/750b0b279f07f62b033b4bf4f1e7c99a6d03fc4c))
+* release main ([#1361](https://github.com/zuohuadong/supacloud-1/issues/1361)) ([2359236](https://github.com/zuohuadong/supacloud-1/commit/23592368c04a7f876b0e50b00cede6ec5b87e4db))
+* release main ([#1403](https://github.com/zuohuadong/supacloud-1/issues/1403)) ([a889f07](https://github.com/zuohuadong/supacloud-1/commit/a889f07bb1ec13744b17a5f0cc4be3aa98f5e179))
+* release main ([#1450](https://github.com/zuohuadong/supacloud-1/issues/1450)) ([662afde](https://github.com/zuohuadong/supacloud-1/commit/662afde422456e17a0a53a56e976294ffdcf4804))
+* release main ([#1484](https://github.com/zuohuadong/supacloud-1/issues/1484)) ([41b3e72](https://github.com/zuohuadong/supacloud-1/commit/41b3e72d25dd8b1ea1d3dea5b75c90bdea9be797))
+* release main ([#1495](https://github.com/zuohuadong/supacloud-1/issues/1495)) ([ced66da](https://github.com/zuohuadong/supacloud-1/commit/ced66dab53493e875c58f904ef0b3c26a8810928))
+* release main ([#1507](https://github.com/zuohuadong/supacloud-1/issues/1507)) ([b7f3a59](https://github.com/zuohuadong/supacloud-1/commit/b7f3a59885596742a8b11fc808d898165a8989ec))
+* release main ([#1561](https://github.com/zuohuadong/supacloud-1/issues/1561)) ([3ee71e3](https://github.com/zuohuadong/supacloud-1/commit/3ee71e301e7a5499780b45ec6c64e53698000029))
+* release main ([#1592](https://github.com/zuohuadong/supacloud-1/issues/1592)) ([224f76d](https://github.com/zuohuadong/supacloud-1/commit/224f76dfff188cf943152c3ee23cff2269d4d2b9))
+* release main ([#1633](https://github.com/zuohuadong/supacloud-1/issues/1633)) ([e9db823](https://github.com/zuohuadong/supacloud-1/commit/e9db823b47db6b0d9ebe8057792e35e34c144420))
+* release main ([#1647](https://github.com/zuohuadong/supacloud-1/issues/1647)) ([9afdb5c](https://github.com/zuohuadong/supacloud-1/commit/9afdb5c348a2e87169e8898b3842091bb8f1ddea))
+* release main ([#1657](https://github.com/zuohuadong/supacloud-1/issues/1657)) ([1a3f7ff](https://github.com/zuohuadong/supacloud-1/commit/1a3f7ff901f05dda38ed4827d70a91a4acccd8b3))
+* release main ([#1661](https://github.com/zuohuadong/supacloud-1/issues/1661)) ([77ea3fa](https://github.com/zuohuadong/supacloud-1/commit/77ea3fa73707222f21561005a6be3569dae606b4))
+* release main ([#1664](https://github.com/zuohuadong/supacloud-1/issues/1664)) ([9827aa5](https://github.com/zuohuadong/supacloud-1/commit/9827aa53b418a91a41e81bc02c50f05d09e03d4c))
+* release main ([#1668](https://github.com/zuohuadong/supacloud-1/issues/1668)) ([a7ce18b](https://github.com/zuohuadong/supacloud-1/commit/a7ce18b73e0a2e93df664fb8da08cd40f3bdae82))
+* **web-console:** upgrade svadmin and adopt product page primitives ([7043a6d](https://github.com/zuohuadong/supacloud-1/commit/7043a6ddcedecd9ca9112122f65726b93d93af88))
+* **web-console:** upgrade svadmin packages ([#1449](https://github.com/zuohuadong/supacloud-1/issues/1449)) ([cf6334c](https://github.com/zuohuadong/supacloud-1/commit/cf6334cb4a913b60f8feae3eb726d033a8c67c1b))
+* **web-console:** upgrade SVAdmin packages to 0.75 ([2ef0f8d](https://github.com/zuohuadong/supacloud-1/commit/2ef0f8db9005be2a140e9aa20750af53cab9bb2b))
+* **web-console:** upgrade SVAdmin to latest and migrate contracts ([#1358](https://github.com/zuohuadong/supacloud-1/issues/1358)) ([efbfb8a](https://github.com/zuohuadong/supacloud-1/commit/efbfb8a5cd30dfa8f380be89132f7b623b1055f4))
+* **web-console:** upgrade svadmin ui to 0.81.0 ([#1589](https://github.com/zuohuadong/supacloud-1/issues/1589)) ([49498d3](https://github.com/zuohuadong/supacloud-1/commit/49498d3c713b8ef83cbf8224706155e0ebbe208d))
+
 ## [0.49.2](https://github.com/vibeunion/supacloud/compare/web-console-v0.49.1...web-console-v0.49.2) (2026-10-06)
 
 

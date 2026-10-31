@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/zuohuadong/supacloud-1/compare/query-v0.2.0...query-v0.3.0) (2026-10-31)
+
+
+### Features
+
+* **compiler,query,supacloud-js:** procedure façade, supabase-js compatibility, and @supacloud/query adapter ([#1653](https://github.com/zuohuadong/supacloud-1/issues/1653)) ([8ed8d1a](https://github.com/zuohuadong/supacloud-1/commit/8ed8d1ad594ab981e6d03333ad35248608467992))
+
+
+### Miscellaneous Chores
+
+* release main ([#1661](https://github.com/zuohuadong/supacloud-1/issues/1661)) ([77ea3fa](https://github.com/zuohuadong/supacloud-1/commit/77ea3fa73707222f21561005a6be3569dae606b4))
+
 ## [0.2.0](https://github.com/vibeunion/supacloud/compare/query-v0.1.0...query-v0.2.0) (2026-10-05)
 
 

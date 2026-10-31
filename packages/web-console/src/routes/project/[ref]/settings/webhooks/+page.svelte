@@ -3,6 +3,8 @@
   import { page } from "$app/state";
   import { t } from "svelte-i18n";
   import { Webhook, Plus, Loader2, Trash2, RefreshCw, Play, RotateCcw, History, TestTube2 } from "lucide-svelte";
+  import PagePattern from "@svadmin/ui/components/PagePattern.svelte";
+  import FilterToolbar from "@svadmin/ui/components/content/FilterToolbar.svelte";
   import { toast } from "svelte-sonner";
   import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
 
@@ -32,6 +34,7 @@
   let selectedId = $state<string | null>(null);
   let newUrl = $state("");
   let newEvents = $state("*");
+  let query = $state("");
 
   const queryClient = useQueryClient();
 
@@ -57,7 +60,21 @@
   }));
 
   const endpoints = $derived(webhooksQuery.data?.items ?? []);
+  const visibleEndpoints = $derived.by(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return endpoints;
+    return endpoints.filter((endpoint) =>
+      endpoint.url.toLowerCase().includes(needle)
+      || endpoint.events.some((event) => event.toLowerCase().includes(needle)));
+  });
   const deliveries = $derived(deliveriesQuery.data?.items ?? []);
+  const pageState = $derived(
+    webhooksQuery.isPending ? "loading"
+      : webhooksQuery.isError ? "error"
+        : endpoints.length === 0 && !showAdd ? "empty"
+          : visibleEndpoints.length === 0 && !showAdd ? "filtered-empty"
+            : "ready",
+  );
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ["durable-webhooks", projectRef] });
@@ -186,22 +203,28 @@
   <title>{$t("Hooks.title")} | SupaCloud</title>
 </svelte:head>
 
-<div class="h-full flex flex-col space-y-4">
-  <div class="flex items-center justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-bold">{$t("Hooks.title")}</h1>
-      <p class="text-sm text-muted-foreground mt-1">{$t("Hooks.subtitle")}</p>
-    </div>
-    <div class="flex items-center gap-3">
-      <span class="px-2.5 py-1 rounded-full bg-brand/10 text-brand text-xs font-bold">
-        {$t("Hooks.count", { values: { count: endpoints.length } })}
-      </span>
-      <button onclick={() => showAdd = !showAdd}
-        class="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-brand text-white hover:bg-brand/90 transition-colors">
-        <Plus size={14} /> {$t("Hooks.add")}
-      </button>
-    </div>
-  </div>
+<PagePattern
+  kind="list"
+  title={$t("Hooks.title")}
+  description={$t("Hooks.subtitle")}
+  state={pageState}
+  stateTitle={pageState === "error" ? $t("Hooks.load_failed") : pageState === "empty" ? $t("Hooks.no_hooks_title") : $t("Hooks.loading")}
+  stateDescription={pageState === "empty" ? $t("Hooks.no_hooks_description") : undefined}
+  retry={() => { void webhooksQuery.refetch(); }}
+>
+  {#snippet actions()}
+    <span class="px-2.5 py-1 rounded-full bg-brand/10 text-brand text-xs font-bold">
+      {$t("Hooks.count", { values: { count: endpoints.length } })}
+    </span>
+    <button onclick={() => showAdd = !showAdd}
+      class="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-brand text-white hover:bg-brand/90 transition-colors">
+      <Plus size={14} /> {$t("Hooks.add")}
+    </button>
+  {/snippet}
+
+  {#snippet toolbar()}
+    <FilterToolbar bind:query placeholder={$t("Hooks.search")} />
+  {/snippet}
 
   {#if showAdd}
     <div class="rounded-xl border bg-card p-5 space-y-4">
@@ -249,7 +272,7 @@
       </div>
     {:else}
       <div class="divide-y divide-border/20">
-        {#each endpoints as endpoint (endpoint.id)}
+        {#each visibleEndpoints as endpoint (endpoint.id)}
           <div class="px-5 py-4 hover:bg-muted/10 transition-colors">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="flex items-start gap-3 min-w-0">
@@ -347,4 +370,4 @@
       </div>
     {/if}
   </div>
-</div>
+</PagePattern>

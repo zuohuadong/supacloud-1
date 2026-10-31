@@ -165,11 +165,17 @@ SMTP, hooks and other unrelated forms remain outside this scoped migration.
 
 The Web Console currently tracks the published SVAdmin line:
 
-- `@svadmin/core` `0.59.0`
-- `@svadmin/ui` `0.82.0`
-- `@svadmin/elysia` `0.14.3`
-- `@svadmin/sveltekit` `0.13.0`
-- `@svadmin/ai-elements` `0.11.0`
+- `@svadmin/core` `0.67.0`
+- `@svadmin/ui` `0.102.0`
+- `@svadmin/elysia` `0.14.15`
+- `@svadmin/sveltekit` `0.13.12`
+- `@svadmin/ai-elements` `0.13.0`
+
+The Webhook settings page now consumes the UI product layer instead of
+hand-composing page chrome and state branches: `PagePattern` owns the list-page
+header, actions, loading/empty/filtered-empty/error states and retry affordance,
+while `FilterToolbar` provides the search surface. This keeps route code focused
+on webhook data and mutations.
 
 This release line requires SvelteKit 3, so the Console also migrated its
 adapter configuration into the Vite `sveltekit` plugin and moved page state

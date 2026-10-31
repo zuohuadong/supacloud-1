@@ -900,6 +900,7 @@
     "load_failed": "无法加载 Webhooks。",
     "no_hooks": "暂无 Webhooks。",
     "events": "事件类型",
+    "search": "按 URL 或事件类型搜索",
     "function": "函数",
     "name": "名称",
     "table": "表",

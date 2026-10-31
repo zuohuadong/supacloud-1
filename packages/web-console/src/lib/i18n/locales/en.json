@@ -900,6 +900,7 @@
     "load_failed": "Unable to load webhooks.",
     "no_hooks": "No webhooks yet.",
     "events": "Event types",
+    "search": "Search by URL or event type",
     "function": "Function",
     "name": "Name",
     "table": "Table",

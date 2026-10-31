@@ -23,4 +23,6 @@ test("durable webhook page uses the delivery API instead of pg_net triggers", ()
   expect(source).toContain("/replay");
   expect(source).not.toContain("pg_net");
   expect(source).not.toContain("database/sql");
+  expect(source).toContain("PagePattern.svelte");
+  expect(source).toContain("FilterToolbar.svelte");
 });

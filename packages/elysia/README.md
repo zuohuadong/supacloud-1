@@ -10,12 +10,10 @@ is a separately authorized business command, never an assumed rollback.
 
 The Elysia peer and development dependency are pinned to `2.0.0-rc.0`.
 
-The package exposes two Bun entry points. `@supacloud/elysia/bun-aot` wraps the
-full SupaCloud/Elysia application in `Bun.serve` and is the parity path for
-production behavior. `createBunApplication` selects the framework-free native
-dispatcher for simple routes and automatically selects the AOT parity path for
-command, policy, scope, lifecycle or other advanced applications. The lower
-level `@supacloud/elysia/bun` entry remains available for performance experiments.
+The package exposes `@supacloud/elysia/bun-aot` as the unified Bun entry point.
+It wraps the full SupaCloud/Elysia application in `Bun.serve` and preserves the
+complete production contract. Future Bun executable compilation can be added
+below this entry without maintaining a second HTTP runtime.
 `compatibility.json` records the acceptance target: Bun 1.4.2, Elysia
 2.0.0-rc.0, `typebox` 1.3.34, `exact-mirror` 1.2.6, TypeScript CLI 7.0.2
 and the compiler's separate TypeScript 6 semantic API 6.0.2. The matrix is a

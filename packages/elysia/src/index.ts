@@ -1089,6 +1089,7 @@ export function createModulePlugin<
   const supportedFields = new Set([
     "method", "path", "handler", "body", "params", "query", "headers", "cookie",
     "response", "responses", "contract", "schemaKinds", "nativeResponse", "invoker",
+    "directInvoker", "executionMode",
     "command", "aspects", "aspectPipeline",
     "paramTransforms", "paramDefaults", "queryTransforms", "queryDefaults", "title", "data",
     // defineJsonContract can be spread into a route; these helpers are not hooks.

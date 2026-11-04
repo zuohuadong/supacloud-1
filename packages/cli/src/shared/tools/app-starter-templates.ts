@@ -58,7 +58,8 @@ const server = Bun.serve({
 console.log("Local demo: " + server.url);
 `;
 
-const APPLICATION_SOURCE = (name: string): string => `import { createApplication, createSupAuthRequestContext, type SupAuthContextOptions, type ApplicationOptions, type CommandGovernance } from "@supacloud/elysia";
+const APPLICATION_SOURCE = (name: string): string => `import { createBunApplication } from "@supacloud/elysia/bun-aot";
+import { createSupAuthRequestContext, type SupAuthContextOptions, type ApplicationOptions, type CommandGovernance } from "@supacloud/elysia";
 import { createCompiledModules } from "../generated/application";
 
 export interface AppAdapters {
@@ -70,7 +71,7 @@ export interface AppAdapters {
 
 // The host verifies external identity (SupAuth for unified login) before creating requestContext.
 export function createApp(adapters: AppAdapters) {
-  return createApplication({
+  return createBunApplication({
     ...adapters,
     name: ${JSON.stringify(name)},
     modules: createCompiledModules(),

@@ -9,6 +9,13 @@ is a separately authorized business command, never an assumed rollback.
 ## Compatibility and Acceptance Boundary
 
 The Elysia peer and development dependency are pinned to `2.0.0-rc.0`.
+
+The package also exposes `createBunNativeApplication`, a framework-free Bun
+transport for compiler-generated routes. It uses the same `CompiledRoute`,
+TypeBox contracts and positional invokers without loading Elysia. This path is
+the native performance target; the Elysia application remains available for
+plugins and integration environments while the native path reaches feature
+parity.
 `compatibility.json` records the acceptance target: Bun 1.4.2, Elysia
 2.0.0-rc.0, `typebox` 1.3.34, `exact-mirror` 1.2.6, TypeScript CLI 7.0.2
 and the compiler's separate TypeScript 6 semantic API 6.0.2. The matrix is a

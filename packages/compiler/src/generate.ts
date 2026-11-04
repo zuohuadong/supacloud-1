@@ -81,7 +81,7 @@ const INTERFACES = `export interface CompiledRoute {
   data?: Record<string, unknown>;
   aspects?: CompiledAspect[];
   aspectPipeline?: CompiledAspectPipeline;
-  invoker?: (
+  invoker: (
     controller: unknown,
     request: {
       params?: Record<string, unknown>;

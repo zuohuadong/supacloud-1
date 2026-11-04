@@ -261,7 +261,7 @@
     {
       "name": "DatabaseContractsOptions",
       "kind": "type",
-      "signature": "export interface DatabaseContractsOptions {\n    rootDir: string;\n    outDir: string;\n    postgrestTypes: string;\n    drizzleSchema: string;\n    role: string;\n    graphql: GraphqlOptions;\n    migrations: readonly string[];\n}"
+      "signature": "export interface DatabaseContractsOptions {\n    rootDir: string;\n    outDir: string;\n    postgrestTypes?: string;\n    drizzleSchema?: string;\n    role: string;\n    graphql?: GraphqlOptions;\n    migrations: readonly string[];\n}"
     },
     {
       "name": "DEFAULT_SUPACLOUD_CONFIG",

@@ -12,4 +12,15 @@ describe("platform extensions SVAdmin migration", () => {
     expect(source).not.toContain("createMutation");
     expect(source).not.toContain("apiClient");
   });
+
+  test("uses the SVAdmin product primitives for page state, filtering, and row actions", () => {
+    expect(source).toContain('from "@svadmin/ui/components/PagePattern.svelte"');
+    expect(source).toContain('from "@svadmin/ui/components/content/FilterToolbar.svelte"');
+    expect(source).toContain('from "@svadmin/ui/components/DataTableShell.svelte"');
+    expect(source).toContain('from "@svadmin/ui/components/RowActions.svelte"');
+    expect(source).toContain('from "@svadmin/ui/components/content/StatusBadge.svelte"');
+    expect(source).toContain('state="filtered-empty"');
+    expect(source).toContain("stickyActions");
+    expect(source).not.toContain('bind:value={searchQuery}');
+  });
 });

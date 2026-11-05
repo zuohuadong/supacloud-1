@@ -31,21 +31,23 @@ The production build outputs to `build/` directory. In production, the Managemen
 
 ## SVAdmin Styles
 
-The console uses `@svadmin/ui@0.81.0`, `@svadmin/core@0.58.0`,
-`@svadmin/ai-elements@0.10.3`, `@svadmin/sveltekit@0.12.2`, and
-`@svadmin/elysia@0.14.2`.
+The console uses `@svadmin/ui@0.114.0`, `@svadmin/core@0.76.0`,
+`@svadmin/ai-elements@0.14.0`, `@svadmin/sveltekit@0.13.25`, and
+`@svadmin/elysia@0.14.27`. List and settings pages that repeat a hand-rolled
+loading, empty, and error shell use `PagePattern`, `FilterToolbar`,
+`DataTableShell`, `StatusBadge`, `RowActions`, and `DataState` from
+`@svadmin/ui`. The project overview uses `DashboardPage` and `PageSection` for
+the dashboard shell and service grouping.
 
 Use versions published on npm when upgrading these packages. A GitHub release
 alone does not make a package version installable.
 
-Tailwind v4 configuration lives in `src/app.css`. Import
-`@svadmin/ui/app.theme.css` once after Tailwind, not alongside
-`@svadmin/ui/app.css`. This entry includes precompiled component styles and
-semantic theme metadata, so the host does not scan UI package sources.
-AI elements import `@svadmin/ai-elements/ai.theme.css`, which now re-exports the
-precompiled plain `ai.css` entry instead of declaring raw Tailwind theme tokens.
-The host therefore declares its own `@theme inline` bridge so SVAdmin semantic
-tokens remain usable as utilities (`bg-background`, `border-border`, …).
+Tailwind v4 configuration lives in `src/app.css`. Import the precompiled
+`@svadmin/ui/app.css` and `@svadmin/ai-elements/ai.css` entries once after
+Tailwind. The host no longer scans SVAdmin sources with `@source`; the shipped
+styles include component utilities and compatibility aliases. The host keeps
+its `@theme inline` bridge so SVAdmin semantic tokens remain usable as
+utilities (`bg-background`, `border-border`, …).
 
 Use public component entries such as
 `@svadmin/ui/components/AutoTable.svelte`. The root UI entry re-exports

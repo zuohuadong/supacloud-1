@@ -10,6 +10,8 @@ describe("project dashboard", () => {
     expect(pageSource).toContain('data-metric="database"');
     expect(pageSource).toContain('data-metric="tasks"');
     expect(pageSource).toContain('aria-label="Refresh"');
+    expect(pageSource).toContain('from "@svadmin/ui/components/content/DashboardPage.svelte"');
+    expect(pageSource).toContain('from "@svadmin/ui/components/content/PageSection.svelte"');
   });
 
   test("clears and fences stale dashboard responses across project changes", () => {

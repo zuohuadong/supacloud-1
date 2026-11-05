@@ -3,6 +3,8 @@
   import { resolve } from "$app/paths";
   import { page } from "$app/state";
   import { RefreshCw, Loader2, Database, Users, HardDrive, ListChecks, Code2, Activity } from "lucide-svelte";
+  import DashboardPage from "@svadmin/ui/components/content/DashboardPage.svelte";
+  import PageSection from "@svadmin/ui/components/content/PageSection.svelte";
   import {
     loadProjectOverview,
     validOverviewProject,
@@ -64,12 +66,8 @@
   }
 </script>
 
-<div class="h-full flex flex-col space-y-4">
-  <div class="flex items-center justify-between">
-    <div>
-      <h1 class="text-2xl font-bold">Project overview</h1>
-      <p class="text-sm text-muted-foreground mt-1">Health and key metrics for this project</p>
-    </div>
+<DashboardPage title="Project overview" description="Health and key metrics for this project" pageId="project-overview">
+  {#snippet actions()}
     <button
       type="button"
       aria-label="Refresh"
@@ -80,7 +78,7 @@
       {#if loading}<Loader2 size={14} class="animate-spin" />{:else}<RefreshCw size={14} />{/if}
       Refresh
     </button>
-  </div>
+  {/snippet}
 
   {#if error}
     <div role="alert" class="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-xs text-red-600">
@@ -134,8 +132,7 @@
     {/if}
 
     {#if services}
-      <div class="rounded-xl border bg-card p-4">
-        <h2 class="text-sm font-semibold">Services</h2>
+      <PageSection title="Services">
         <div class="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2">
           {#each services.services as service (service.id)}
             <div class="flex items-center justify-between rounded-lg border px-3 py-2 text-xs">
@@ -144,7 +141,7 @@
             </div>
           {/each}
         </div>
-      </div>
+      </PageSection>
     {/if}
   {/if}
-</div>
+</DashboardPage>

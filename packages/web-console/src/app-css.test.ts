@@ -8,11 +8,11 @@ const appPath = fileURLToPath(new URL("./app.css", import.meta.url));
 const appSource = readFileSync(appPath, "utf8");
 const appCss = postcss.parse(appSource);
 const uiThemeSource = readFileSync(
-  fileURLToPath(import.meta.resolve("@svadmin/ui/app.theme.css")),
+  fileURLToPath(import.meta.resolve("@svadmin/ui/app.css")),
   "utf8",
 );
 const aiThemeSource = readFileSync(
-  fileURLToPath(import.meta.resolve("@svadmin/ai-elements/ai.theme.css")),
+  fileURLToPath(import.meta.resolve("@svadmin/ai-elements/ai.css")),
   "utf8",
 );
 
@@ -26,7 +26,7 @@ describe("SVAdmin stylesheet migration", () => {
     }
   });
 
-  test("imports the Tailwind host entries and bridges SVAdmin semantic tokens", () => {
+  test("imports the precompiled SVAdmin entries without source scanning", () => {
     const imports: string[] = [];
     const sources: string[] = [];
     appCss.walkAtRules("import", (rule) => { imports.push(rule.params); });
@@ -34,14 +34,11 @@ describe("SVAdmin stylesheet migration", () => {
 
     expect(imports).toEqual([
       '"tailwindcss"',
-      '"@svadmin/ui/app.theme.css"',
-      '"@svadmin/ai-elements/ai.theme.css"',
+      '"@svadmin/ui/app.css"',
+      '"@svadmin/ai-elements/ai.css"',
     ]);
-    expect(sources.some((source) => source.includes("@svadmin/ui"))).toBe(false);
-    expect(sources.some((source) => source.includes("@svadmin/ai-elements"))).toBe(true);
-    // AI Elements 0.9 ships a precompiled plain stylesheet instead of a raw
-    // `@theme` block, so the host must bridge semantic tokens itself.
-    expect(aiThemeSource).toContain("ai.css");
+    expect(sources).toEqual([]);
+    expect(aiThemeSource).toContain(".svadmin-ai");
     expect(appSource).toContain("@theme inline");
     expect(appSource).toContain("--color-border: var(--border)");
   });
@@ -77,14 +74,19 @@ describe("SVAdmin stylesheet migration", () => {
       fileURLToPath(import.meta.resolve("@svadmin/ui/components/AutoTable.svelte")),
       "utf8",
     );
-    const aliases = new Set(tableSource.match(/\bsvadmin-u-[a-f0-9]+\b/g));
+    // SVAdmin publishes readable component utilities and precompiled aliases;
+    // the host must consume the published stylesheet without scanning sources.
+    expect(tableSource).not.toMatch(/\bsvadmin-u-[a-f0-9]+\b/);
+    expect(tableSource).toContain("svadmin-auto-table__desktop");
+    const aliases = new Set(uiThemeSource.match(/\.svadmin-u-[a-f0-9]+\b/g) ?? []);
     expect(aliases.size).toBeGreaterThan(0);
     for (const alias of aliases) {
-      expect(uiThemeSource).toContain(`.${alias}`);
-      expect(css).toContain(`.${alias}`);
+      expect(css).toContain(alias);
     }
     expect(css).toContain(".svadmin-button");
     expect(css).toContain(".svadmin-table");
+    expect(css).toContain(".h-7");
+    expect(css).toContain(".space-y-3");
     expect(css).toContain("--color-background: var(--background)");
     expect(css).toContain("--background: hsl(0 0% 100%)");
     expect(css).toContain("--background: hsl(240 10% 3.9%)");

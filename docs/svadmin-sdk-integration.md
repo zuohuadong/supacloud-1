@@ -16,6 +16,11 @@ command RPCs.
 | Domain authorization, idempotency and receipts | Trusted application server / database |
 | Query invalidation, form layout and notifications | svadmin / application UI |
 
+For a framework-level reference that keeps this ownership model, including
+request-scoped SupaCloud clients, read-only SSR snapshots and SPA task centers,
+see [SvelteKit Integration](./sveltekit-integration.md). It is a transport and
+lifecycle recipe, not a default SvelteKit host.
+
 `@supacloud/js/contracts` is a facade over the existing
 `@supacloud/contracts/client`, not another implementation. It is separate from the
 SDK root and does not expose platform commands or persistent browser locks.
@@ -77,19 +82,90 @@ see its README for `onNavigate`. Cancellation does not prove server rollback and
 must not clear a persisted unresolved operation. Refresh affected queries only
 after confirmation and while the original tenant/actor still owns that cache.
 
-## Compatibility before upgrading the task adapter
+## Bind the generated review reference
 
-At the integration baseline, svadmin pins SDK `0.23.1` for tests and declares
-`^0.23.1` as an optional peer; SupaCloud source is `0.33.0`. Those ranges do not
-overlap. This new subpath is not available in the old SDK. Do not widen the peer
-range or update installation instructions until a released SDK containing it has
-passed the adapter's consumer tests.
+The command starter emits `src/client/reviews.ts` and
+`src/client/review-transport.ts`. Bind these to the existing SVAdmin view/store;
+no SVAdmin dependency is added to the generated application.
 
-In particular, the current SDK defaults task subscriptions to Management API
-polling. Realtime requires an explicitly published application-owned table; do
-not assume an internal `public.tasks` table exists. Re-run the real SDK-backed
-svadmin fixtures for submit, metadata, wait, list, cancellation, retry, subscription
-delivery and cleanup when upgrading. CRUD/auth providers need not change.
+```ts
+import { createAuthenticatedFetch } from "@supacloud/js/contracts";
+import { createReviewClient, createReviewPendingStore } from "./client/reviews";
+import { createReviewTransport } from "./client/review-transport";
+
+// Run inside a mounted, identity-scoped view, never a server module singleton.
+const pending = createReviewPendingStore(localStorage, {
+  projectId: session.projectId,
+  tenantId: session.tenantId,
+  applicationId: "reviews",
+  subject: session.subject,
+});
+const client = createReviewClient(createReviewTransport({
+  supabase: session.supabase,
+  apiOrigin: applicationOrigin,
+  authenticatedFetch: createAuthenticatedFetch({
+    getAccessToken: () => session.getAccessToken(),
+  }),
+}), pending);
+const unsubscribe = client.subscribe(() => updateView(client.snapshot()));
+updateView(client.snapshot());
+void client.load();
+
+// Register this with the view's unmount and identity-change lifecycle.
+function dispose() {
+  unsubscribe();
+  client.dispose();
+}
+```
+
+Here `session`, `applicationOrigin` and `updateView` are application-owned
+bindings, not new SDK globals. Capture one immutable session identity. Its token
+supplier must refuse a switched identity, and its Supabase instance must not
+silently adopt another actor's token. Dispose and reconstruct the view on
+project, tenant or subject change; never just change credentials in place.
+
+Bind rows and read feedback to `state.list`; bind approval/upload buttons to
+`client.approve(row)` / `client.upload(row, file)`. Disable mutations while
+submitting or unknown, and expose `client.reconcile()` separately. Recovery reads
+the original authorized operation receipt, not the current row state. Do not
+wrap these calls in an SVAdmin mutation retry hook. Only confirmed results may
+invalidate other affected queries, and only while their original scope is active.
+
+The reference pending store survives reload but is not an atomic cross-tab
+lock. Keep one active mutation owner per identity/application. Logout and
+unmount must not delete unknown operations. Stored pending data contains no
+tokens, business rows or file bytes; storage corruption blocks writes.
+
+See [customer workflow acceptance](customer-workflow-completion.md#browser-acceptance)
+for the reproducible browser-to-native-database fixture. Its optional `--svadmin`
+view uses installed SVAdmin Button/Table components, Svelte subscriptions and
+unmount cleanup. On October 16, 2026 that view passed the same real-database
+upload, approval, conflict, reload-recovery and foreign-identity scenarios as
+the DOM view, with strict Svelte diagnostics enabled. This verifies those
+components and the reference binding, not every SVAdmin provider or the deployed
+customer UI. Neither the template nor the SDK gains a hard UI dependency.
+
+## Task adapter compatibility
+
+The `@svadmin/supabase` task subpath declares `@supacloud/js` as an optional peer
+with the tested range `^0.33.0 || ^0.34.0 || ^0.36.0`. Its consumer fixtures run
+against those three released SDK lines. At the time of writing, the upstream
+`packages/supacloud-js` source tree is `0.45.3`, so source is ahead of the
+declared peer range; do not treat the repository version as an adapter
+compatibility claim.
+
+A `0.45.3` transport probe passes against the task endpoints, but that line
+requires `@supabase/supabase-js` 2.118.0 and its nested auth-js types currently
+fail the strict consumer type check. Do not widen the peer range until the
+auth-js patch and type matrix are updated.
+
+Adding a new SDK line requires updating the peer range and rerunning the real
+SDK-backed fixtures for submit, metadata, wait, list, cancellation, retry,
+subscription delivery and cleanup. CRUD/auth providers need not change.
+
+The SDK defaults task subscriptions to Management API polling. Realtime requires
+an explicitly published application-owned table; do not assume an internal
+`public.tasks` table exists.
 
 ## Next integration steps
 
@@ -163,19 +239,85 @@ SMTP, hooks and other unrelated forms remain outside this scoped migration.
 
 ### Web Console upgrade baseline
 
-The Web Console currently tracks the published SVAdmin line:
+The Web Console tracks the newest jointly compatible published SVAdmin line
+verified against npm on 2026-11-05:
 
-- `@svadmin/core` `0.67.0`
-- `@svadmin/ui` `0.102.0`
-- `@svadmin/elysia` `0.14.15`
-- `@svadmin/sveltekit` `0.13.12`
-- `@svadmin/ai-elements` `0.13.0`
+- `@svadmin/core` `0.76.0`
+- `@svadmin/ui` `0.114.0`
+- `@svadmin/elysia` `0.14.27`
+- `@svadmin/sveltekit` `0.13.25`
+- `@svadmin/ai-elements` `0.14.0`
 
-The Webhook settings page now consumes the UI product layer instead of
-hand-composing page chrome and state branches: `PagePattern` owns the list-page
-header, actions, loading/empty/filtered-empty/error states and retry affordance,
-while `FilterToolbar` provides the search surface. This keeps route code focused
-on webhook data and mutations.
+The UI `0.114.0` release ships precompiled CSS and the product page layer. The
+console imports `app.css` and `ai.css` directly and removes the old source
+scanning directives. Its platform extensions page now uses `PagePattern`,
+`FilterToolbar`, `DataTableShell`, `StatusBadge`, `RowActions`, and `DataState`
+for consistent list states, filtering, status display, and row actions. The
+project overview uses `DashboardPage` and `PageSection` for the dashboard
+shell and service grouping. The transitive `@svadmin/devtools` dependency is
+pinned to `0.6.5`, the version
+required by UI `0.114.0`.
+
+Core 0.70 removed `useRelation`, `UseRelationOptions`, `appendTenantCacheKey`
+and `queryKeyMatchesTenant`; the Console does not use these retired APIs. Its
+existing TypeBox 1.x contracts and SvelteKit 3 configuration remain compatible.
+
+List and settings pages that repeated a local loading, empty, and error shell now
+use `PagePattern`. Pages with a client-side search use `FilterToolbar`. The
+Management API requests and mutation payloads are unchanged.
+
+The application runtime page uses `PagePattern`, `Input`, `DataState`,
+`DescriptionList` and the SVAdmin table primitives. Operators still choose an
+application and environment, inspect independently loaded runtime/release data,
+and open the corresponding development snapshot. The scope form remains visible
+when no application is selected. Each section owns its loading, empty and error
+state; a failed runtime read must not hide available releases. Read failures offer
+the existing refresh action. Preview creation and cleanup keep their explicit
+buttons and single-attempt requests.
+
+Acceptance scenarios for this migration:
+
+```gherkin
+Scenario: Choose an application scope
+  Given no application or environment is selected
+  When the operator opens the application runtime page
+  Then the SVAdmin scope inputs remain available beside the empty state
+  And submitting a valid scope updates the URL and loads that scope
+
+Scenario: Independent sections and recovery
+  Given application data is loading
+  When the runtime read fails but releases load successfully
+  Then the runtime section offers retry and the releases remain usable
+  And retry refreshes reads without repeating a preview mutation
+
+Scenario: Release and development navigation
+  Given multiple release pages and a stored development snapshot
+  When the operator changes release pages or inspects a target
+  Then pagination and the verified development details remain available
+  And an empty release page displays the SVAdmin empty state
+
+Scenario: Scope changes and unmount
+  Given a request is pending for the current project and application
+  When the operator switches scope or leaves the page
+  Then the request is cancelled and late data cannot replace the current view
+```
+
+`@supacloud/app` is the source package in this repository, currently `0.34.1`.
+Its `file:../contracts` dependency stays linked to the local contracts package;
+upgrading its Angular development pair does not replace it with a registry copy.
+The Svelte binding retains TypeScript 6 for `svelte-check`, as does the Console
+alongside its TypeScript 7 alias.
+
+The November 1 refresh was verified with frozen installs for the three changed
+packages, registry/outdated checks and the single compiled DOM fixture below.
+Its mocked HTTP scenarios cover the acceptance criteria above, including form
+validation and duplicate preview submission suppression. It does not verify a
+deployed backend or authenticated browser session.
+
+```sh
+# From packages/web-console
+bun test 'src/routes/project/[ref]/applications/page.test.ts'
+```
 
 This release line requires SvelteKit 3, so the Console also migrated its
 adapter configuration into the Vite `sveltekit` plugin and moved page state
@@ -183,10 +325,14 @@ consumers from `$app/stores` to `$app/state`. The legacy TypeBox 0.34 marker
 bridge was removed because SVAdmin now consumes TypeBox 1.x directly.
 Fixed schemas use the strict `defineResource` entrypoint; only schemas built
 from live database column metadata retain a separate dynamic boundary.
-`bun run check` and `bun run build` are the upgrade gates; the latter may still
-report existing bundle-size and ineffective dynamic-import warnings.
+`bun run check` and `bun run build` passed for the November 5 SVAdmin upgrade
+on the current main baseline. The targeted tables `page.test.ts` fixture also
+passed, covering column visibility persistence and installed SVAdmin Core peer
+compatibility. The build still reports existing alias-deprecation, bundle-size
+and ineffective dynamic-import warnings. These are local checks, not deployed
+backend acceptance.
 
-Local Chromium acceptance used mocked HTTP responses, not production data:
+Earlier baseline Chromium acceptance used mocked HTTP responses, not production data:
 the Auth user list rendered, a valid create submission closed the form and
 showed success, and an invite response with a numeric ID retained the draft
 and showed failure. These checks are not deployment or live backend acceptance.
@@ -202,8 +348,23 @@ and showed failure. These checks are not deployment or live backend acceptance.
    outcomes, target switching and late results. Keep UI metadata application-owned.
 
 This PR delivers the SDK facade, public-entrypoint consumer/type checks and browser
-bundle isolation. It does not deliver automatic svadmin schema generation, a
-svadmin SDK upgrade, a production authorization integration or a release.
+bundle isolation. It does not generate SVAdmin UI components, upgrade the SVAdmin
+SDK, integrate production authorization, or publish a release.
+
+## Database metadata for SVAdmin generation
+
+`database` action `export_svadmin_schema` reads column metadata, primary keys, and
+foreign-key targets. JSON mode returns a `databaseColumns` payload that can be
+passed to a separate `svadmin_generateResource` call. The CLI does not generate
+the resource or UI itself.
+
+```sh
+database action="export_svadmin_schema" table="orders" format="json"
+```
+
+Schema and table names must be unquoted PostgreSQL identifiers. A column named
+`id` is reported as a primary key when no primary-key constraint is present, and
+a `*_id` column is reported as a foreign key when no constraint names its target.
 
 ## Local verification
 

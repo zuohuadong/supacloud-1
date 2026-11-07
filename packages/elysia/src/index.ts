@@ -1704,6 +1704,7 @@ export { createMemoryPolicy } from "./memory_policy";
 export type { MemoryPolicy } from "./memory_policy";
 export {
   createQueueWorkerTransport,
+  createRabbitMqQueuePort,
   createWorker,
   SupaCloudWorker,
   WorkerRegistrationError,
@@ -1719,6 +1720,9 @@ export type {
   WorkerQueueMessage,
   WorkerQueuePort,
   WorkerQueueReceiveOptions,
+  RabbitMqChannel,
+  RabbitMqMessage,
+  RabbitMqQueuePortOptions,
   WorkerReceiptContext,
   WorkerReceiptOperation,
   WorkerRunResult,

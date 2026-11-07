@@ -3,6 +3,7 @@ import type { DeliveryBuildManifest, DeliveryObject } from "./delivery-build-sch
 export {
   WorkerExecutionGroupSchema, WorkerExecutionSchema, parseWorkerExecutionGroup,
   validateWorkerExecution, workerResourceUsage, assertWorkerBudget, resolveWorkerRoute,
+  workerShardCount, workerShardQueue, workerShardForKey,
 } from "./worker-execution";
 export { ComputeResourcesSchema } from "./worker-execution";
 export type { WorkerExecutionGroup, WorkerExecution, WorkerResourceUsage, ComputeResources } from "./worker-execution";

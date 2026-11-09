@@ -18,7 +18,6 @@ import { ApplicationRuntimeAllocations } from "./application-runtime-allocation"
 import { ApplicationRuntimeFiles } from "./application-runtime-files";
 import { createApplicationCompatibilityVerifier } from "./application-compatibility";
 import { createApplicationWorkerRetirementChecks } from "./application-worker-retirement";
-import { provisionApplicationWorkerQueues } from "./application-worker-queues";
 
 type CompatibilityInput = Parameters<
   NonNullable<ApplicationDeploymentDependencies["verifyCompatibility"]>
@@ -126,9 +125,6 @@ export function createDefaultApplicationRouteComposition(
     readiness,
     allocations,
     ...createApplicationWorkerRetirementChecks(),
-    provisionWorkerQueues: async ({ projectRef, groups }) => {
-      await provisionApplicationWorkerQueues(projectRef, groups);
-    },
     files,
     runtime,
     gateway: gatewayService,

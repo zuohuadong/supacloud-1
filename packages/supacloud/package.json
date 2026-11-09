@@ -17,7 +17,7 @@
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target node",
     "prepublishOnly": "bun run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun check --no-script"
   },
   "keywords": [
     "supacloud",
@@ -38,10 +38,13 @@
   },
   "overrides": {
     "@supacloud/compiler": "file:../compiler",
-    "@supacloud/delivery": "file:../delivery"
+    "@supacloud/delivery": "file:../delivery",
+    "@supacloud/cli": "file:../cli",
+    "@supacloud/admin": "file:../admin",
+    "@supacloud/db": "file:../db"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.4",
     "typescript": "^7.0.2"
   }
 }

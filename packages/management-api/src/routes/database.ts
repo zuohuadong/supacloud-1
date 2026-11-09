@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
 import type { SQL, TransactionSQL } from "bun";
 import { projectService } from "../services";
-import { db, getProjectDb, getProjectRoleDb, removeProjectDbCache, resolveAuthenticatorName, resolveDbName, sql as metaSql, type SqlExecutionMode } from "../db";
+import { db, getProjectDb, getProjectRoleDb, removeProjectDbCache, resolveAuthenticatorName, resolveDbName, sql as metaSql, streamPostgresCopy, writePostgresCopy, type SqlExecutionMode } from "../db";
 import { isDangerousSQL, normalizeSqlForPolicy, sqlContainsTransactionControl, WRITE_SQL_PATTERN } from "../db/sql-policy";
 import { cancelActiveSqlQuery } from "../db/sql-query-registry";
 import { splitSqlStatements, stripOuterTransactionStatements } from "../db/sql-statements";
@@ -228,6 +228,11 @@ const RLS_TESTER_MUTATION_PATTERN = /\b(?:INSERT|UPDATE|DELETE|MERGE|UPSERT|CREA
 const RLS_TESTER_ROW_LOCK_PATTERN = /\bFOR\s+(?:UPDATE|NO\s+KEY\s+UPDATE|SHARE|KEY\s+SHARE)\b/i;
 const RLS_TESTER_SELECT_INTO_PATTERN = /\bSELECT\b[\s\S]*?\bINTO\s+(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)?(?:TABLE\s+)?/i;
 const RLS_TESTER_EXTERNAL_EFFECT_PATTERN = /\b(?:net\s*\.\s*http_[a-z_]+|(?:extensions\s*\.\s*)?http_(?:get|post|put|patch|delete|head)|pgmq\s*\.\s*send|pg_notify|pg_sleep|pg_advisory_[a-z_]+|dblink(?:_[a-z_]+)?|lo_(?:create|creat|open|write|put|import|export|unlink)|pg_(?:read|write)_file|pg_ls_dir|pg_logical_emit_message|set_config|setval|nextval)\s*\(/i;
+const COPY_TO_STDOUT_PATTERN = /^\s*COPY\b[\s\S]*\bTO\s+STDOUT\b/i;
+
+export function isCopyToStdoutQuery(sqlQuery: string): boolean {
+  return COPY_TO_STDOUT_PATTERN.test(sqlQuery) && !/\bFROM\s+STDIN\b/i.test(sqlQuery);
+}
 
 export function assertRlsTesterQuery(query: string): string {
   const statements = splitSqlStatements(query);
@@ -1219,6 +1224,13 @@ async function executeProjectSqlRoute({
       set.status = 404;
       return { message: "Project database credentials not found", code: "404", status: 404 };
     }
+    if (isCopyToStdoutQuery(sqlQuery)) {
+      if (mode !== "admin") {
+        set.status = 403;
+        return { message: "COPY TO STDOUT requires admin SQL mode", code: "42501", status: 403 };
+      }
+      return streamPostgresCopy(getProjectDb(credentials.db_name), sqlQuery, request.signal);
+    }
     const useRoleConnection = mode !== "admin";
     const execute = async () => {
       if (mode === "migration" && !skipReplacementJournalCheck) {
@@ -1724,6 +1736,38 @@ export const databaseRoutes = new Elysia({ prefix: "/v1/projects/:ref/database" 
                 const pgError = error as Record<string, unknown>;
                 return { message: pgError.message || "RLS test failed", code: pgError.code || "400", details: pgError.details || null, hint: pgError.hint || null, status: 400 };
             }
+        },
+    )
+    .post(
+        "/copy",
+        {
+            params: t.Object({ ref: t.String({ minLength: 1 }) }),
+            query: t.Object({ sql: t.String({ minLength: 1, maxLength: 100_000 }) }),
+            detail: { tags: ["projects", "database"], summary: "Stream PostgreSQL COPY data" },
+        },
+        async ({ params, query, request, set }) => {
+            const authError = await requireAdminAuth(request);
+            if (authError) return projectAuthResponse(authError, set);
+            const sqlQuery = query.sql;
+            const copyToStdout = isCopyToStdoutQuery(sqlQuery);
+            const copyFromStdin = /^\s*COPY\b[\s\S]*\bFROM\s+STDIN\b/i.test(sqlQuery)
+                && !copyToStdout;
+            if (!copyToStdout && !copyFromStdin) {
+                set.status = 400;
+                return { message: "SQL must be COPY ... TO STDOUT or COPY ... FROM STDIN", code: "COPY_STREAM_REQUIRED", status: 400 };
+            }
+            const credentials = await getProjectDatabaseCredentials(params.ref);
+            if (!credentials) {
+                set.status = 404;
+                return { message: "Project database credentials not found", code: "404", status: 404 };
+            }
+            if (copyToStdout) return streamPostgresCopy(getProjectDb(credentials.db_name), sqlQuery, request.signal);
+            if (!request.body) {
+                set.status = 400;
+                return { message: "COPY FROM STDIN requires a request body", code: "COPY_BODY_REQUIRED", status: 400 };
+            }
+            await writePostgresCopy(getProjectDb(credentials.db_name), sqlQuery, request.body, request.signal);
+            return { copied: true };
         },
     )
     .post(

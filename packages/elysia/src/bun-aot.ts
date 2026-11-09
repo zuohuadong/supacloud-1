@@ -39,7 +39,10 @@ export function createBunAotApplication<const Http extends AnyElysia = Elysia, R
   options: ApplicationOptions<Http, RequestContext>,
 ): BunAotApplication {
   const app = createApplication(options);
-  const fetch = app.handle.bind(app);
+  // Bun.serve always passes a Request. Use Elysia's compiled fetch function
+  // directly; `handle` is a convenience API that also accepts URL strings and
+  // wraps every call in an async adapter.
+  const fetch = app.fetch;
   return {
     app,
     fetch,

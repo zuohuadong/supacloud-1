@@ -8,11 +8,11 @@ native mainstream framework installations:
 - Fastify on Node;
 - NestJS on Express;
 - NestJS on the native Node adapter (`@nestjs/platform-node`).
+- Gin on Go 1.27.
 
-It also records native Elysia 2/Bun twice: once with the same TypeBox contracts
-and once as a bare transport floor. The headline comparison is SupaCloud versus
-the four native Node framework paths; native Elysia is not presented as a
-competing product.
+It also records native Elysia 2/Bun with the same TypeBox contracts and Gin on
+Go 1.27 with binding validation. Every adapter in the comparison validates the
+same request contract; an unvalidated bare transport baseline is excluded.
 
 The server contract is deliberately small so the result isolates routing,
 JSON serialization, path parameter matching and JSON body parsing. Every
@@ -21,11 +21,12 @@ adapters over loopback with the same warmup, concurrency, request count and
 rotated scenario order. SupaCloud uses the release-tagged local
 `@supacloud/elysia` package, so its compiler/runtime path is measured rather
 than a hand-written Elysia route. The contract baseline validates params and
-body with the same TypeBox schemas: Elysia/SupaCloud use native route schemas,
-Fastify uses JSON Schema/Ajv, and Express/Nest use TypeBox middleware/pipes.
+body with equivalent schemas: Elysia/SupaCloud use native route schemas,
+Fastify uses JSON Schema/Ajv, Express/Nest use TypeBox middleware/pipes, and
+Gin uses Go binding validator tags.
 No framework is allowed to skip validation in the contract comparison.
 
-Run locally after installing Bun and Node 24:
+Run locally after installing Bun, Node 24 and Go 1.27:
 
 ```sh
 for package in contracts delivery commands db compiler app elysia; do

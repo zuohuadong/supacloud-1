@@ -1,5 +1,73 @@
 # @supacloud/compiler
 
+## Enforced Database Governance
+
+Existing compiler callers retain `off` as a compatibility migration exception.
+Newly generated `command` starters keep `databaseGovernance: { mode: "check",
+moduleFile: "db/modules.ts" }` for ordinary compile/check/build. `check` runs
+the existing `@supacloud/db` source-boundary and contract-freshness gate plus SQL
+lint, without importing project modules or opening a database connection. The
+generated integration dev profile switches the same configuration to `enforce`
+and supplies a loopback database URL explicitly.
+
+`enforce` adds live Catalog reconciliation on top of `check`, including on
+incremental cache hits. Missing adoption files, stale contracts, SQL findings or
+Catalog drift block generation even with `writeOnError`; checks never generate
+contracts or migrations. The minimal/http/edge starters remain database-free.
+
+For an existing database project, adopt the governed path by declaring the real
+database modules and setting the following in `supacloud.config.ts`:
+
+```ts
+export default {
+  databaseGovernance: {
+    mode: "check",
+    projectRoot: ".",
+    moduleFile: "db/modules.ts",
+    databaseUrlEnv: "SUPACLOUD_CHECK_DATABASE_URL",
+    schemas: ["public"],
+  },
+};
+```
+
+Keep `check` in committed project configuration so local builds and CI remain
+hermetic. Run `enforce` only in an explicit release/deployment gate where the
+platform injects a read-only PostgreSQL connection, or run the separate
+`supacloud db module_check` command through the same controlled environment.
+Application code and committed configuration must not contain a production
+connection URL.
+
+`projectRoot` is relative to the configuration directory (or `rootDir` when
+calling `compileProject` / `checkProject` directly). The compiler does not load
+`.env` files for this worker, generate migrations, repair contracts, or apply
+SQL. Never use a migration/owner role for this check. Setting `mode: "off"` is
+reserved for an explicit migration exception and should not be used in a new
+database starter.
+
+In `enforce` mode, compile/check/dev must pass the existing
+`@supacloud/db` source-boundary and contract-freshness check, SQL lint and live
+Catalog reconciliation for nonempty declared database modules. The module file
+must export `default` or `modules` containing `defineDatabaseModule` results.
+Its SQL and declared test paths must resolve within `projectRoot`.
+All lint/reconciliation findings, including warnings, block generation regardless
+of `strict` or `writeOnError`. Existing generated artifacts are retained.
+
+Each check runs in a fresh Bun process with a 30-second deadline, including
+incremental cache hits. Bun must be installed on PATH when the compiler runs on
+Node. Module imports are trusted executable project configuration, not sandboxed
+inputs. Module/SQL edits are reread; changing the compiler configuration requires
+restarting dev. Watch observes SQL/JSON/JS/TS inputs under the governance root,
+excluding generated output, dependencies and standard artifact directories.
+Remote database changes alone do not trigger watch; the next compile checks them.
+
+This gate enforces the adopted database-source contract and declared object
+checks, not complete database coverage, ORM usage, runtime authorization, or SQL
+test behavior. Passing it is not deployment acceptance. Keep one existing
+append-only migration ledger, maintain ZModel structure and SQL sources
+separately, and explicitly generate/review RPC contracts before compiling.
+See `docs/database-governance.md` and `docs/database-source-contracts.md` for
+the database checks and their limitations.
+
 Generated HTTP clients export `ApiClientError` with `code`, `method`, route
 `path`, `status` and a bounded `requestId`. Undeclared HTTP errors no longer
 embed raw response bodies in their message; explicit inspection remains
@@ -8,17 +76,29 @@ response unions, caller decoders, binary/stream routes and GraphQL stay intact.
 These errors do not prove write rollback and do not add automatic retries.
 See [typed clients and recovery](../../docs/framework-composition.md).
 
+For Elysia routes, the compiler governs Effect contracts by default:
+`effect.dependencies` documents the runtime environment, `effect.errors`
+documents safe HTTP mappings, and `effect.retry` requires explicit bounded
+attempts. The default policy requires `requireRouteEffects`,
+`requireErrorMappings` and `requireDependencies`. See
+[Effect governance](../../docs/effect-governance.md).
+
 ## Unified Database Contracts
 
+Database contracts are protocol-aware: configure only the database sources the
+application uses (`postgrestTypes`, `modelSchema`, or `graphql`). The generated
+`database.manifest.json` is a TypeBox-validated, fingerprinted build boundary;
+consumers must reject it when its schema or migration fingerprint is stale.
+
 `supacloud-compiler database-contracts database-contracts.json` generates a shared
-type entry point while preserving PostgREST, Drizzle and GraphQL native types:
+type entry point while preserving PostgREST, ZModel and GraphQL native types:
 
 ```json
 {
   "rootDir": ".",
   "outDir": "generated",
   "postgrestTypes": "database.types.ts",
-  "drizzleSchema": "db/schema.ts",
+  "modelSchema": "zenstack/generated/schema.ts",
   "role": "authenticated",
   "graphql": {
     "schema": "graphql/schema.graphql",
@@ -31,10 +111,10 @@ type entry point while preserving PostgREST, Drizzle and GraphQL native types:
 Configuration paths are relative to the configuration directory; GraphQL document
 patterns are resolved under `rootDir`. Supply the official PostgREST `Database`
 snapshot and a role-scoped `pg_graphql` schema snapshot. The generated barrel
-exports `Database`, `QueryData`, Drizzle schema types and GraphQL contracts.
-Consumers need `@supabase/supabase-js` and their Drizzle dependencies.
+exports `Database`, `QueryData`, ZModel schema types and GraphQL contracts.
+Consumers need `@supabase/supabase-js` and their ZenStack dependencies.
 
-`--check` detects drift in supplied snapshots, local Drizzle imports, migration
+`--check` detects drift in supplied snapshots, local ZModel imports, migration
 content/order and generated artifacts without writing. This is an offline check,
 not proof of live database parity or authorization. Refresh snapshots from the
 intended database and role before running it. Keep runtime decoders at untrusted
@@ -42,7 +122,7 @@ boundaries; protocol result shapes are not interchangeable.
 
 Compiled DI requires constructor injection and generated scope factories.
 Property `inject()` and runtime injection-context APIs fail with `SC2012`.
-Production SQL scanning reports non-`unknown` Drizzle `sql<T>` as `SC6007` and
+Production SQL scanning reports non-`unknown` Kysely `sql<T>` as `SC6007` and
 dynamic `sql.raw` as `SC6008`. Prefer parameters and explicit result decoders.
 These rules do not replace PostgreSQL constraints, RLS or migration review.
 
@@ -128,7 +208,7 @@ SupaCloud 应用静态编译器：读取 `@supacloud/app` 装饰器元数据的�
 
 ## Recommended GraphQL Query Contracts
 
-**Database First is the only server-schema model.** Drizzle and SQL declarations
+**Database First is the only server-schema model.** ZModel and SQL declarations
 are migrated to PostgreSQL; `pg_graphql` reflects the actual database, and
 `graphql-schema` exports the intended role's snapshot. Author queries/fragments,
 not GraphQL resolver classes or a separate server SDL. `graphql.schema` accepts
@@ -296,7 +376,7 @@ bun add @supacloud/compiler
 
 ## 零配置项目
 
-需要完整运行入口时，使用 `supacloud-cli app init --root ./orders --name orders`。
+需要完整运行入口时，使用 `supacloud app init --root ./orders --name orders`。
 模板将本包放在 `devDependencies`，预置状态规格、治理能力、类型检查和本地测试。
 编译产物的 HTTP method / scope 保留字面量联合类型，可直接传给 Elysia 适配器；
 跨运行时依赖字典使用构造器/工厂参数类型连接，局部依赖保留类型推断和错误检查。
@@ -320,6 +400,7 @@ bunx supacloud-compiler dev
 | OpenAPI 3.1 module | 开启 |
 | permissions manifest | 开启 |
 | module boundary preset | `modular-monolith` |
+| Effect route governance | 三项严格检查均开启 |
 | provider tree-shaking | 开启 |
 
 需要覆盖默认值时，在项目根目录添加 `supacloud.config.ts`：
@@ -527,6 +608,42 @@ parameters、requestBody、responses、securitySchemes 以及 `x-supacloud` 路�
 因此不会维护第二份 API contract。默认包含 bearer JWT scheme；项目可在
 `openApi` 配置中补充文档信息、servers 和其他显式 security schemes。
 
+内存受限的业务进程可配置 `openApi: { snapshots: false }`，只生成
+`createOpenApiDocument` 和 `serializeOpenApiDocument` 工厂，不导出
+`OPENAPI_DOCUMENT` / `OPENAPI_JSON`，也不在模块加载时转换完整文档或序列化 JSON。
+例如：
+
+```ts
+export default defineSupacloudConfig({
+  generateOpenApi: true,
+  openApi: { title: "Orders API", version: "1.0.0", snapshots: false },
+});
+```
+
+重新生成后，可将工厂传给可选文档插件，按请求创建文档：
+
+```ts
+import { createOpenApiDocument } from "./generated/openapi";
+
+const documentation = {
+  openApi: { document: createOpenApiDocument },
+};
+// createApplication({ ..., documentation })
+```
+
+该模式仍加载文档所引用的 schema 和路由定义，但不会缓存生成的文档对象或 JSON
+字符串。`serializeOpenApiDocument()` 每次调用都会创建并序列化一份新文档；传入
+显式 document 时直接序列化该对象。应用路由的响应校验不受影响。
+
+需要彻底移出业务进程时，在构建/发布阶段使用下方 `openapi-export` 导出静态
+`openapi.json`，由静态服务或独立文档入口提供，业务入口不再导入生成的 OpenAPI
+模块。GraphQL SDL 同样可直接发布已有 `schema.graphql` 文件；生成的 GraphQL
+查询和结果校验应继续保留。部署必须显式携带这些静态文件，单文件函数 bundle
+不能假设请求时可访问源码目录。
+
+`snapshots` 默认仍为 `true`，保持旧导出兼容。快照初始化带有 pure 注解，支持该
+注解的打包器可移除未使用的快照；未打包导入默认模块仍会创建两份快照。
+
 `OPENAPI_JSON` 是运行时快照；需要提交独立 `openapi.json` 时，在应用已经能加载
 生成模块的运行时调用 `exportGeneratedOpenApiJson()` 或直接写出该字符串。编译器
 不会为了生成 JSON 执行应用 schema。`readOpenApiJson()` 和
@@ -558,7 +675,8 @@ supacloud-compiler openapi-export ./generated/openapi.ts ./generated/openapi.jso
 supacloud-compiler openapi-diff ./contracts/openapi.base.json ./generated/openapi.json --json
 ```
 
-`openapi-export` 在运行时加载生成的 `openapi.ts` 并原子地写出独立 JSON；它不会在
+`openapi-export` 在运行时加载生成的 `openapi.ts` 并原子地写出独立 JSON；也支持
+`snapshots: false` 的模块，此时调用 `createOpenApiDocument()`。它不会在
 编译阶段执行应用 schema。可用 `--space 0` 到 `--space 10` 控制缩进，重复执行不会
 改写内容不变的文件。当前只承诺 JSON 输出，YAML 转换由发布流水线按需处理。
 
@@ -600,8 +718,8 @@ export default defineSupacloudConfig({
 | `invalid-aspect-reference` | error | aspect 不是可静态解析的函数声明、箭头函数或函数表达式 |
 | `invalid-command-mode` | error | transaction/idempotency 必须显式为 `"required"` 或 `"none"`，不允许拼写错误或动态值悄悄关闭治理（SC4012） |
 | `missing-deps` | warn（strict 时 error） | 构造/工厂依赖无法静态解析 |
-| `generated-any` | warn（strict 时 error） | 生成的 TypeScript 产物包含 `any` |
-| `source-any` | warn（strict 时 error） | 未被排除的生产源码包含显式 `any` |
+| `generated-any` | error | 生成的 TypeScript 产物包含 `any` |
+| `source-any` | error | 未被排除的生产源码包含显式或推断出的 `any` |
 | `source-type-assertion` | warn（strict 时 error） | 生产源码使用 `as T` 或 `<T>value` 类型断言 |
 | `source-non-null-assertion` | warn（strict 时 error） | 生产源码使用非空断言 `value!` |
 | `source-implicit-widening` | warn（strict 时 error） | 可静态判定的字面量类型隐式宽化 |
@@ -611,7 +729,11 @@ export default defineSupacloudConfig({
 
 ## 类型安全扫描
 
-`strict: true` 默认开启两道类型安全门；也可以单独配置 `typeSafety`。生产源码扫描默认排除测试、fixture、声明文件、`generated` 和 `dist`，并支持 `typeSafety.exclude` 增加项目自定义排除规则。
+生产源码与生成产物的类型安全门始终开启，不能通过 `strict: false`、`--no-strict` 或 `typeSafety.scanProductionSource/noAnyInGenerated: false` 关闭。`strict` 仍控制其他 warning 是否升级为 error。
+
+生产源码检查强制启用 TypeScript `strict` 及其子选项，以及 `noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`noImplicitOverride`、`noPropertyAccessFromIndexSignature` 和 `noFallthroughCasesInSwitch`。项目关闭这些选项不会降低编译检查强度。类型错误及 `any` 错误不会被 `writeOnError` 绕过，增量编译也会重新执行类型安全门。
+
+生产源码扫描默认排除测试、fixture、声明文件、`generated` 和 `dist`，并支持 `typeSafety.exclude` 增加项目自定义排除规则。这些排除项属于检查范围边界，不代表被排除文件已经通过类型检查。第三方声明的完整安全性仍不在保证范围内。
 
 ```bash
 supacloud-compiler check --root ./app --out ./app/generated --strict

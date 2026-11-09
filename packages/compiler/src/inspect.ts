@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { ApplicationGraph, AspectRefNode, Diagnostic, ModuleNode, ProviderNode } from "./types";
 import { inspectRouteContracts } from "./route-contracts";
+import { featureTransitionForRoute } from "./feature";
 
 export interface ExecutionPlan {
   module: string;
@@ -26,6 +27,11 @@ export interface ContextPack {
     eventComposition: "rxjs";
     angularHost: "@supacloud/app/angular";
     cancellation: "explicit-owner-signal";
+    readTransport: "postgrest-supabase-js";
+    writeTransport: "command-rpc";
+    writeRetry: "disabled";
+    externalOutcome: "receipt-reconcile";
+    databaseSource: "zmodel-append-only";
   };
   relatedModules: {
     importedBy: string[];
@@ -119,7 +125,9 @@ export function createContextPack(graph: ApplicationGraph, subject: string): Con
     }
   }
 
-  const modules = graph.modules.filter((module) => selected.has(module.name));
+  const modules = graph.modules
+    .filter((module) => selected.has(module.name))
+    .map(sanitizeContextModule);
   const queryDocuments = graph.graphql?.documents.filter((file) => modules.some((module) => {
     const path = relative(dirname(module.file), file);
     return path !== ".." && !path.startsWith(`..${sep}`);
@@ -131,6 +139,7 @@ export function createContextPack(graph: ApplicationGraph, subject: string): Con
   } : undefined;
   const files = [...new Set(modules.flatMap((module) => [
     module.file,
+    ...(module.featureSpec?.file ? [module.featureSpec.file] : []),
     ...module.providers.map((provider) => provider.file),
     ...module.controllers.map((controller) => controller.file),
     ...(graph.moduleHandlerFiles?.[module.name] ?? []),
@@ -162,6 +171,11 @@ export function createContextPack(graph: ApplicationGraph, subject: string): Con
       eventComposition: "rxjs",
       angularHost: "@supacloud/app/angular",
       cancellation: "explicit-owner-signal",
+      readTransport: "postgrest-supabase-js",
+      writeTransport: "command-rpc",
+      writeRetry: "disabled",
+      externalOutcome: "receipt-reconcile",
+      databaseSource: "zmodel-append-only",
     },
     relatedModules: {
       imports: subjectModule.imports.filter((name) => selected.has(name)),
@@ -170,6 +184,46 @@ export function createContextPack(graph: ApplicationGraph, subject: string): Con
         .map((module) => module.name)
         .sort(),
     },
+  };
+}
+
+/** Context packs describe structure only; never expose source expressions or provider values. */
+function sanitizeContextModule(module: ModuleNode): ModuleNode {
+  const sanitizeAspect = (aspect: AspectRefNode): AspectRefNode => ({
+    ...aspect,
+    expression: "[omitted]",
+  });
+  return {
+    ...module,
+    providers: module.providers.map((provider: ProviderNode) => ({
+      ...provider,
+      ...(provider.useValueExpr === undefined ? {} : { useValueExpr: "[omitted]" }),
+      ...(provider.useFactoryName === undefined ? {} : { useFactoryName: "[omitted]" }),
+      ...(provider.functionalInjects === undefined ? {} : {
+        functionalInjects: provider.functionalInjects.map((inject) => ({ ...inject, expression: "[omitted]" })),
+      }),
+    })),
+    ...(module.aspects === undefined ? {} : { aspects: module.aspects.map(sanitizeAspect) }),
+    controllers: module.controllers.map((controller) => ({
+      ...controller,
+      ...(controller.functionalInjects === undefined ? {} : {
+        functionalInjects: controller.functionalInjects.map((inject) => ({ ...inject, expression: "[omitted]" })),
+      }),
+      routes: controller.routes.map((route) => ({
+        ...route,
+        ...(route.aspects === undefined ? {} : { aspects: route.aspects.map(sanitizeAspect) }),
+      })),
+    })),
+    commands: module.commands.map((command) => ({
+      ...command,
+      ...(command.aspects === undefined ? {} : { aspects: command.aspects.map(sanitizeAspect) }),
+    })),
+    ...(module.jobs === undefined ? {} : {
+      jobs: module.jobs.map((job) => ({
+        ...job,
+        ...(job.aspects === undefined ? {} : { aspects: job.aspects.map(sanitizeAspect) }),
+      })),
+    }),
   };
 }
 
@@ -207,7 +261,10 @@ export function createExecutionPlans(graph: ApplicationGraph): ExecutionPlan[] {
     refs.map((ref, index) => `${boundary}.aspect[${index}]:${ref.name}`);
   return graph.modules.flatMap((module): ExecutionPlan[] => [
     ...module.controllers.flatMap((controller) => controller.routes.map((route): ExecutionPlan => {
-      const command = module.commands.find((item) => item.className === route.command);
+      const featureTransition = featureTransitionForRoute(module, controller, route);
+      const commandRef = route.command ?? featureTransition?.command;
+      const command = module.commands.find((item) =>
+        item.className === commandRef || item.name === commandRef);
       const path = `${controller.path}/${route.path}`.replace(/\/+/g, "/");
       return {
         module: module.name,

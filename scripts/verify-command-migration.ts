@@ -38,7 +38,7 @@ for (const name of ["contracts", "commands", "compiler", "db", "app", "app-svelt
   if (name === "elysia") await run(cwd, ["run", "generate:example"]);
   await run(cwd, ["run", "typecheck"]);
   await run(cwd, ["run", "typecheck:test"]);
-  if (name === "db" || name === "supacloud-js") await run(cwd, ["-p", "tsconfig.commands.json"], resolve(cwd, "node_modules/.bin/tsc"));
+  if (name === "db" || name === "supacloud-js") await run(cwd, ["check", "--no-script", "-p", "tsconfig.commands.json"]);
   // supacloud-js asserts the built export map and browser bundle, so its dist
   // must exist before tests; other packages keep the source-first test order.
   if (name === "supacloud-js") await run(cwd, ["run", "build"]);
@@ -50,5 +50,5 @@ await run(root, ["run", "check:boundaries"]);
 const node = Bun.which("node");
 if (!node) throw new Error("Node.js is required for release script tests");
 await run(root, ["--test", ".github/scripts/prepare-command-package.test.mjs", ".github/scripts/ai-review-merge.test.mjs"], node);
-await run(root, ["-p", "scripts/tsconfig.commands.json"], resolve(root, "packages/compiler/node_modules/.bin/tsc"));
+await run(root, ["check", "--no-script", "-p", "scripts/tsconfig.commands.json"]);
 console.log("\nCommand migration package/native gates passed. Run the Svelte browser acceptance separately.");

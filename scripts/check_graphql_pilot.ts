@@ -281,7 +281,7 @@ try {
   evidence.productionIntrospection = { disabledExportFails: true, authorizedDataQueryStillWorks: true };
 
   await cp(join(fixture, "client.ts"), join(work, "src/client.ts"));
-  await command([join(repo, "packages/compiler/node_modules/.bin/tsc"), "--noEmit", "--strict",
+  await command([process.execPath, "check", "--no-script", "--strict",
     "--target", "ES2022", "--module", "ESNext", "--moduleResolution", "bundler", "--skipLibCheck",
     join(work, "src/client.ts")]);
   const bundle = await Bun.build({ entrypoints: [join(work, "src/client.ts")], outdir: join(work, "browser"), target: "browser" });

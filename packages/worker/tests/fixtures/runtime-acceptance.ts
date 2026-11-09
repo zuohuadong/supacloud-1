@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { withPgflowDatabase, until } from "./database.js";
-import { renderRoles, renderQueueGrants } from "../../scripts/roles.js";
+import { renderRoles } from "../../scripts/roles.js";
 import { roleNames } from "../../scripts/scheduler.js";
 import { submitReport, downloadReport, LocalArtifacts, reportHandler } from "../../examples/reporting/report.js";
 import { submitBoundedTask } from "../../src/bounded-admission.js";
@@ -129,7 +129,6 @@ export async function runtimeAcceptance() {
 
       // The real worker uses a scoped runtime login, never the fixture installer.
       await psql(renderRoles("fixture"));
-      await psql(renderQueueGrants("fixture"));
       const { owner, worker } = roleNames("fixture");
       // Queue-only recipes provision their queue grants separately from Flow
       // publication. Exercise the invoker under the actual NOLOGIN owner.
@@ -189,7 +188,7 @@ export async function runtimeAcceptance() {
           "-e", "SUPACLOUD_WORKER_CONCURRENCY=2", "-e", "SUPACLOUD_WORKER_PG_CONNECTIONS=3",
           "-e", "SUPACLOUD_WORKER_VISIBILITY_SECONDS=15", "-e", "SUPACLOUD_WORKER_RETRY_LIMIT=2",
           "-e", `SCW_TEST_HOLD_AFTER=${hold}`, "-e", "EDGE_WORKER_LOG_LEVEL=error",
-          "oven/bun:1.4.2", "bun", "--no-env-file", "reporting-worker.js"]);
+          "oven/bun:1.4.4", "bun", "--no-env-file", "reporting-worker.js"]);
         return name;
       };
       const health = (name: string, path: string) => command(["docker", "exec", name, "bun", "-e",

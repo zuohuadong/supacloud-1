@@ -1,4 +1,4 @@
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.4
 FROM oven/bun:${BUN_VERSION}
 
 WORKDIR /app
@@ -8,7 +8,7 @@ COPY package.json bun.lock* ./
 COPY packages/edge-runtime/package.json ./packages/edge-runtime/
 
 # Install dependencies
-RUN bun install
+RUN bun pm fetch && bun install --offline --frozen-lockfile
 
 # Copy source code
 COPY packages/edge-runtime ./packages/edge-runtime

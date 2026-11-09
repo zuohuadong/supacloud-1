@@ -53,6 +53,10 @@ export interface CompiledRoute {
       context?: unknown;
     },
   ) => Promise<unknown> | unknown;
+  directInvoker?: (controller: unknown, context: unknown) => Promise<unknown> | unknown;
+  directInvokerFast?: (controller: Record<string, unknown>, handler: (...args: unknown[]) => unknown, context: unknown) => Promise<unknown> | unknown;
+  inputFields?: readonly ("body" | "params" | "query" | "headers" | "cookie" | "context")[];
+  executionMode?: "direct" | "pipeline";
 }
 
 export interface CompiledCommand {
@@ -129,6 +133,7 @@ export interface CompiledModule {
   ): Promise<Record<string, unknown>>;
   destroyJobScope?(scope: Record<string, unknown>): Promise<void>;
   controllers: CompiledController[];
+  registerRoutes?(register: (controller: CompiledController, route: CompiledRoute, path: string) => void): void;
   commands: CompiledCommand[];
   jobs: CompiledJob[];
   aspects?: CompiledAspect[];
@@ -270,9 +275,13 @@ export function createCompiledModules(): CompiledApplicationModule[] {
         path: "/webhooks",
         serviceKey: "webhookController",
         scope: "request",
-        routes: [{ method: "POST", path: "/update", handler: "update", body: WebhookInputSchema, headers: WebhookHeadersSchema, responses: { "200": WebhookReceiptSchema }, invoker: async (ctrl: unknown, req: { params?: Record<string, unknown>; query?: Record<string, unknown>; body?: unknown; headers?: Record<string, unknown>; cookie?: Record<string, unknown>; context?: unknown }) => { if (!isRecord(ctrl)) throw new TypeError("Route controller is not an object"); const handler = ctrl["update"]; if (!isFunction(handler)) throw new TypeError("Route handler update is not callable"); return await Reflect.apply(handler, ctrl, [req.body, req.headers?.["idempotency-key"]]); }, schemaKinds: {"body":"declared","headers":"declared","response":"declared"} }, { method: "GET", path: "/receipts/:key", handler: "receipt", params: WebhookKeySchema, responses: { "200": WebhookLookupSchema }, invoker: async (ctrl: unknown, req: { params?: Record<string, unknown>; query?: Record<string, unknown>; body?: unknown; headers?: Record<string, unknown>; cookie?: Record<string, unknown>; context?: unknown }) => { if (!isRecord(ctrl)) throw new TypeError("Route controller is not an object"); const handler = ctrl["receipt"]; if (!isFunction(handler)) throw new TypeError("Route handler receipt is not callable"); return await Reflect.apply(handler, ctrl, [(req.params?.["key"] !== undefined ? req.params?.["key"] : undefined)]); }, schemaKinds: {"params":"declared","response":"declared"} }],
+        routes: [{ method: "POST", path: "/update", handler: "update", body: WebhookInputSchema, headers: WebhookHeadersSchema, responses: { "200": WebhookReceiptSchema }, inputFields: ["body","headers"], invoker: (ctrl: unknown, req: { params?: Record<string, unknown>; query?: Record<string, unknown>; body?: unknown; headers?: Record<string, unknown>; cookie?: Record<string, unknown>; context?: unknown }) => { if (!isRecord(ctrl)) throw new TypeError("Route controller is not an object"); const handler = ctrl["update"]; if (!isFunction(handler)) throw new TypeError("Route handler update is not callable"); return handler.call(ctrl, req.body, req.headers?.["idempotency-key"]); }, executionMode: "pipeline", schemaKinds: {"body":"declared","headers":"declared","response":"declared"} }, { method: "GET", path: "/receipts/:key", handler: "receipt", params: WebhookKeySchema, responses: { "200": WebhookLookupSchema }, inputFields: ["params"], invoker: (ctrl: unknown, req: { params?: Record<string, unknown>; query?: Record<string, unknown>; body?: unknown; headers?: Record<string, unknown>; cookie?: Record<string, unknown>; context?: unknown }) => { if (!isRecord(ctrl)) throw new TypeError("Route controller is not an object"); const handler = ctrl["receipt"]; if (!isFunction(handler)) throw new TypeError("Route handler receipt is not callable"); return handler.call(ctrl, (req.params?.["key"] !== undefined ? req.params?.["key"] : undefined)); }, executionMode: "pipeline", schemaKinds: {"params":"declared","response":"declared"} }],
       }
     ],
+      registerRoutes(register) {
+        register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/webhooks/update");
+        register(this.controllers[0]!, this.controllers[0]!.routes[1]!, "/webhooks/receipts/:key");
+      },
       commands: [{ className: "UpdateWebhook", name: "webhook.update.v1", permission: "webhook.update", transaction: "required", audit: "webhook.updated", idempotency: "required", rpc: "webhookUpdate" }],
       jobs: [],
     },

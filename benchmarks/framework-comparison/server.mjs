@@ -15,7 +15,7 @@ if (!adapter || !Number.isInteger(port) || port < 1 || port > 65_535) {
 const STATIC_RESPONSE = Object.freeze({ ok: true, value: 42 });
 const BODY_RESPONSE = Object.freeze({ ok: true, value: 42, label: "benchmark" });
 const packageVersions = {
-  ...(adapter === "elysia-native-bare-bun" || adapter === "elysia-native-contract-bun" || adapter === "supacloud-elysia-bun" ? { elysia: "2.0.0-rc.0" } : {}),
+  ...(adapter === "elysia-native-contract-bun" || adapter === "supacloud-elysia-bun" ? { elysia: "2.0.0-rc.1" } : {}),
   ...(adapter === "supacloud-elysia-bun" ? { supacloudCore: process.env.SUPACLOUD_CORE_VERSION ?? "source-at-release-tag" } : {}),
   ...(adapter === "express" || adapter === "nestjs-express" ? { express: "5.3.0" } : {}),
   ...(adapter === "fastify" ? { fastify: "5.12.8" } : {}),
@@ -139,19 +139,6 @@ async function startNest(platform) {
   };
 }
 
-async function startElysia() {
-  if (typeof Bun === "undefined") {
-    throw new Error("elysia-bun must be started by Bun");
-  }
-  const { Elysia } = await import("elysia");
-  const app = new Elysia()
-    .get("/json", () => STATIC_RESPONSE)
-    .get("/params/:id", ({ params }) => ({ ok: true, id: params.id }))
-    .post("/echo", ({ body }) => ({ ...body, ok: true }));
-  const server = Bun.serve({ hostname: HOST, port, fetch: app.fetch });
-  return { runtime: `bun ${Bun.version}`, close: () => server.stop(true) };
-}
-
 async function startElysiaContract() {
   if (typeof Bun === "undefined") {
     throw new Error("elysia-native-contract-bun must be started by Bun");
@@ -189,6 +176,7 @@ async function startSupaCloudElysia() {
       },
       executionMode: "direct",
       directInvoker: (controller) => controller.json(),
+      directInvokerFast: (controller, handler) => handler.call(controller),
     },
     {
       method: "GET",
@@ -203,6 +191,7 @@ async function startSupaCloudElysia() {
       },
       executionMode: "direct",
       directInvoker: (controller, context) => controller.params(context.params?.["id"]),
+      directInvokerFast: (controller, handler, context) => handler.call(controller, context.params?.["id"]),
     },
     {
       method: "POST",
@@ -217,6 +206,7 @@ async function startSupaCloudElysia() {
       },
       executionMode: "direct",
       directInvoker: (controller, context) => controller.echo(context.body),
+      directInvokerFast: (controller, handler, context) => handler.call(controller, context.body),
     },
   ];
   const controller = {
@@ -227,6 +217,11 @@ async function startSupaCloudElysia() {
   const module = {
     name: "framework-comparison",
     createServices: () => ({ controller }),
+    registerRoutes(register) {
+      register(this.controllers[0], routes[0], "/json");
+      register(this.controllers[0], routes[1], "/params/:id");
+      register(this.controllers[0], routes[2], "/echo");
+    },
     controllers: [{
       path: "",
       serviceKey: "controller",
@@ -244,7 +239,6 @@ const starters = {
   fastify: startFastify,
   "nestjs-express": () => startNest("express"),
   "nestjs-node": () => startNest("node"),
-  "elysia-native-bare-bun": startElysia,
   "elysia-native-contract-bun": startElysiaContract,
   "supacloud-elysia-bun": startSupaCloudElysia,
 };

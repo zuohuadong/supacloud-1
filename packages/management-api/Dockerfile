@@ -1,4 +1,4 @@
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.4
 FROM oven/bun:${BUN_VERSION}
 
 WORKDIR /app
@@ -8,7 +8,7 @@ COPY package.json bun.lock* ./
 COPY packages/management-api/package.json ./packages/management-api/
 
 # Install dependencies
-RUN bun install
+RUN bun pm fetch && bun install --offline --frozen-lockfile
 
 RUN mkdir -p /etc/supabase/pgredis-tenants \
     && chown bun:bun /etc/supabase/pgredis-tenants

@@ -22,7 +22,7 @@
     "build": "bun run build:js && bun run build:types",
     "build:js": "bun build src/index.ts --outdir dist --target browser --external @tanstack/query-core",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "bun check --no-script -p tsconfig.json",
     "test": "bun test",
     "prepublishOnly": "bun run build"
   },
@@ -30,7 +30,7 @@
     "@tanstack/query-core": "^5.104.1"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.4",
     "typescript": "^7.0.2"
   },
   "license": "Apache-2.0",

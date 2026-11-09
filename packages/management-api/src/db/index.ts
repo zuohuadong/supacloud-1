@@ -426,10 +426,72 @@ export async function executeCancellableSqlQuery(input: CancellableSqlExecution)
       queryId: input.queryId,
       query,
       startedAt: input.startedAt,
-      cancel: () => cancelPostgresBackend(input.cancellationDb, backend.backendPid),
+      cancel: async () => {
+        // Bun 1.4.4 can cancel the query directly. Keep the backend-PID path
+        // as a compatibility fallback for drivers that do not expose cancel().
+        if (typeof query.cancel === "function") {
+          query.cancel();
+          return true;
+        }
+        return cancelPostgresBackend(input.cancellationDb, backend.backendPid);
+      },
     });
   } finally {
     queryConnection.release();
+  }
+}
+
+type CopyQuery = {
+  readable?: () => ReadableStream<Uint8Array>;
+  cancel?: () => unknown;
+};
+
+/** Stream PostgreSQL COPY TO STDOUT without buffering the result in memory. */
+export function streamPostgresCopy(
+  queryDb: SQL,
+  sqlQuery: string,
+  signal?: AbortSignal,
+): Response {
+  const query = queryDb.unsafe(sqlQuery) as unknown as CopyQuery;
+  if (typeof query.readable !== "function") {
+    throw new PgError("The Bun runtime does not support PostgreSQL COPY streams", "COPY_STREAM_UNAVAILABLE");
+  }
+  const onAbort = () => query.cancel?.();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const stream = query.readable();
+  const cleanup = () => signal?.removeEventListener("abort", onAbort);
+  const passthrough = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) { controller.enqueue(chunk); },
+    flush: cleanup,
+  });
+  return new Response(stream.pipeThrough(passthrough), {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+/** Feed a request body into PostgreSQL COPY FROM STDIN with backpressure. */
+export async function writePostgresCopy(
+  queryDb: SQL,
+  sqlQuery: string,
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const query = queryDb.unsafe(sqlQuery) as unknown as {
+    writable?: () => WritableStream<Uint8Array>;
+    cancel?: () => unknown;
+  };
+  if (typeof query.writable !== "function") {
+    throw new PgError("The Bun runtime does not support PostgreSQL COPY streams", "COPY_STREAM_UNAVAILABLE");
+  }
+  const onAbort = () => query.cancel?.();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await body.pipeTo(query.writable(), signal ? { signal } : undefined);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 

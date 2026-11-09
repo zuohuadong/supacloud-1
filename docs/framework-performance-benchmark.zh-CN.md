@@ -5,9 +5,9 @@
 每次 SupaCloud 核心版本发布后，在固定的 CI runner 上自动测量 SupaCloud
 编译适配器与原生主流框架的 HTTP 开销，用于两件事：
 
-1. 找出 SupaCloud 相对 Elysia 原生下界的额外开销，并定位优化方向；
+1. 找出 SupaCloud 相对同契约原生框架的额外开销，并定位优化方向；
 2. 在相同请求契约、运行时和客户端下，给出 SupaCloud 与 Express、Fastify、
-   NestJS/Express、NestJS/原生 Node 适配器的可复现对比。
+   NestJS/Express、NestJS/原生 Node、Gin 的可复现对比。
 
 “性能强”只能在同一场景、同一 runner、重复测量后成立。单次 CI 结果是
 信号，不是生产容量承诺。
@@ -22,7 +22,7 @@
 | NestJS + Express | Node 24 | 原生对手 |
 | NestJS + `@nestjs/platform-node` | Node 24 | 原生对手 |
 | Elysia 2 native + 同等契约 | Bun | SupaCloud 适配器的内部基线 |
-| Elysia 2 native bare | Bun | 纯传输下界，不作为产品对手 |
+| Gin | Go 1.27 | binding validator 标签 |
 
 SupaCloud 路径加载发布 tag 对应的本地 `@supacloud/elysia`，并重新构建
 其 `contracts → delivery → commands → db → compiler → app → elysia` 依赖链，
@@ -65,7 +65,7 @@ artifact。基线比较初期不自动阻断发布，先积累同 runner 的稳�
 
 ## 优化闭环
 
-先看 SupaCloud 与 native Elysia 的差距，再看 SupaCloud 与四个原生对手的相对位置。
+先看 SupaCloud 与同契约 native Elysia 的差距，再看 SupaCloud 与其他原生对手的相对位置。
 如果差距集中在所有场景，优先检查插件注册、请求上下文、scope 查找和统一响应路径；
 如果只出现在 body 或 params，分别检查 schema decoder、解析和参数转换；如果只有
 P99 变差，检查 GC、日志和 after-response 生命周期。每次优化都要保留相同版本矩阵
@@ -80,7 +80,7 @@ P99 变差，检查 GC、日志和 after-response 生命周期。每次优化都
   那么 workflow checkout 该 Release tag，构建 SupaCloud 适配器并运行全部适配器
 
 场景: 所有框架使用同一请求契约
-  假设 benchmark 已启动五条产品路径和一条 native Elysia 下界路径
+  假设 benchmark 已启动所有带请求校验的产品路径
   当 runner 执行 static-json、path-params 和 json-body
   那么每条路径都使用相同的请求、响应字段、客户端、warmup 和并发配置
 

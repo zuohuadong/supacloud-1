@@ -171,14 +171,8 @@ for (const item of inventory) {
 if (!args.includes("--inventory")) {
   for (const project of projects) {
     if (project.name === "workspace-tools") {
-      const tsc = resolveTypeScript(join(root, "scripts"));
-      if (!tsc) {
-        failed = true;
-        if (!args.includes("--json")) console.error(`[${project.name}] tsc is not installed`);
-      } else {
-        execute(project.name, join(root, "scripts"), "tsconfig.commands.json", tsc,
-          ["--noEmit", "-p", "tsconfig.commands.json"]);
-      }
+      execute(project.name, join(root, "scripts"), "tsconfig.commands.json", process.execPath,
+        ["check", "--no-script", "-p", "tsconfig.commands.json"]);
       continue;
     }
     ensureInstall(project.name, project.directory);
@@ -196,14 +190,8 @@ if (!args.includes("--inventory")) {
       continue;
     }
     if (typeof scripts.typecheck === "string") {
-      const tsc = resolveTypeScript(project.directory);
-      if (!tsc) {
-        failed = true;
-        if (!args.includes("--json")) console.error(`[${project.name}] tsc is not installed`);
-      } else {
-        execute(project.name, project.directory, "typecheck", tsc,
-          ["--noEmit", "-p", "tsconfig.json"]);
-      }
+      execute(project.name, project.directory, "typecheck", process.execPath,
+        ["check", "--no-script", "-p", "tsconfig.json"]);
     }
     if (typeof scripts["typecheck:consumer"] === "string") {
       if (typeof scripts.build === "string" && !packageReady(project.directory)) {
@@ -212,14 +200,8 @@ if (!args.includes("--inventory")) {
           "-p", "tsconfig.json", "--emitDeclarationOnly",
         ])) continue;
       }
-      const tsc = resolveTypeScript(project.directory);
-      if (!tsc) {
-        failed = true;
-        if (!args.includes("--json")) console.error(`[${project.name}] tsc is not installed`);
-      } else {
-        execute(project.name, project.directory, "typecheck:consumer", tsc,
-          ["--noEmit", "-p", "tsconfig.consumer.json"]);
-      }
+      execute(project.name, project.directory, "typecheck:consumer", process.execPath,
+        ["check", "--no-script", "-p", "tsconfig.consumer.json"]);
     }
   }
 }

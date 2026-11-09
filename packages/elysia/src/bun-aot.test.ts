@@ -1,3 +1,4 @@
+import type { CompiledRouteRegistrar } from "./index";
 import { expect, test } from "bun:test";
 import { createBunAotApplication } from "./bun-aot";
 
@@ -6,6 +7,9 @@ test("Bun AOT adapter preserves the full Elysia application path", async () => {
     modules: [{
       name: "aot-test",
       createServices: () => ({ controller: { read: () => ({ ok: true }) } }),
+      registerRoutes(register: CompiledRouteRegistrar) {
+        register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/health");
+      },
       controllers: [{
         path: "",
         serviceKey: "controller",
@@ -33,6 +37,10 @@ test("compiler-selected direct routes receive Elysia's decoded context without a
         read: (...args: unknown[]) => ({ argumentCount: args.length }),
         echo: (body: unknown) => body,
       } }),
+      registerRoutes(register: CompiledRouteRegistrar) {
+        register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/direct");
+        register(this.controllers[0]!, this.controllers[0]!.routes[1]!, "/echo");
+      },
       controllers: [{
         path: "",
         serviceKey: "controller",
@@ -44,6 +52,7 @@ test("compiler-selected direct routes receive Elysia's decoded context without a
             handler: "read",
             executionMode: "direct",
             directInvoker: (controller) => controller.read(),
+            directInvokerFast: (controller, handler) => handler.call(controller),
             invoker: (controller) => controller.read(),
           },
           {
@@ -51,6 +60,7 @@ test("compiler-selected direct routes receive Elysia's decoded context without a
             path: "/echo",
             handler: "echo",
             executionMode: "pipeline",
+            inputFields: ["body"],
             invoker: (controller, request) => controller.echo(request.body),
           },
         ],

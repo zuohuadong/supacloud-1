@@ -63,7 +63,7 @@ export function Post(_path: string, _options?: Record<string, unknown>): MethodD
 
 const FIXTURE_FILES: Record<string, string> = {
     "tsconfig.json": FIXTURE_TSCONFIG,
-    "package.json": `{\n  "name": "fixture",\n  "dependencies": { "@supacloud/app": "0.0.0", "@supacloud/elysia": "0.0.0", "elysia": "1.4.30" }\n}\n`,
+    "package.json": `{\n  "name": "fixture",\n  "dependencies": { "@supacloud/app": "0.0.0", "@supacloud/elysia": "0.0.0", "elysia": "2.0.0-rc.1" }\n}\n`,
     "src/runtime.ts": RUNTIME_SOURCE,
     "src/elysia.ts": `export const t = {
   Object: (_shape: Record<string, unknown>) => ({ type: "object" }),

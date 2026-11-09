@@ -17,7 +17,7 @@
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target node --external cpu-features",
     "prepublishOnly": "bun run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun check --no-script"
   },
   "keywords": [
     "supacloud",
@@ -32,12 +32,12 @@
     "directory": "packages/admin"
   },
   "dependencies": {
-    "typebox": "1.3.34",
+    "typebox": "1.4.3",
     "@supacloud/cli": "file:../cli",
     "ssh2": "^1.17.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.4",
     "@types/ssh2": "^1.15.6",
     "typescript": "^7.0.2"
   },

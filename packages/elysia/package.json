@@ -37,8 +37,8 @@
     "test:runtime-safety": "SUPACLOUD_REQUIRE_RUNTIME_SAFETY=1 bun test src/runtime-safety.test.ts",
     "test:contract-upgrade": "bun test src/contract-upgrade.test.ts",
     "bench:http-policy": "bun bench/http-policy.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
+    "typecheck": "bun check --no-script -p tsconfig.json",
+    "typecheck:test": "bun check --no-script -p tsconfig.test.json"
   },
   "keywords": [
     "supacloud",
@@ -58,7 +58,7 @@
     "@supacloud/contracts": "file:../contracts",
     "exact-mirror": "1.2.6",
     "jose": "^6.2.11",
-    "typebox": "1.3.34"
+    "typebox": "1.4.3"
   },
   "overrides": {
     "@supacloud/delivery": "file:../delivery",
@@ -67,15 +67,15 @@
     "@graphql-tools/utils": "^12.0.3"
   },
   "peerDependencies": {
-    "elysia": "2.0.0-rc.0"
+    "elysia": "2.0.0-rc.1"
   },
   "devDependencies": {
     "@supacloud/compiler": "file:../compiler",
     "@supacloud/delivery": "file:../delivery",
     "@supacloud/commands": "file:../commands",
     "@supacloud/db": "file:../db",
-    "@types/bun": "^1.4.2",
-    "elysia": "2.0.0-rc.0",
+    "@types/bun": "^1.4.4",
+    "elysia": "2.0.0-rc.1",
     "typescript": "^7.0.2"
   }
 }

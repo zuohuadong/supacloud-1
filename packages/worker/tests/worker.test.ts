@@ -69,7 +69,6 @@ describe("pgflow process adapter", () => {
     const script = renderRoles("project-a");
     expect(script).toContain("to_regclass('supacloud_worker.admission_limits')");
     expect(script).toContain("to_regprocedure('supacloud_worker.admit_operation(text,text,text,text)')");
-    expect(script).toContain("GRANT SELECT ON pgmq.meta TO");
     expect(script).toContain(`TO ${worker}`);
     expect(script).not.toContain(`GRANT SELECT ON supacloud_worker.admission_tokens TO ${worker}`);
   });
@@ -88,11 +87,9 @@ describe("pgflow process adapter", () => {
   );
   test("installer is version locked, target bound and checksum protected", async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(27);
-    expect(migrations.at(-3)?.version).toBe("supacloud_002");
-    expect(migrations.at(-2)?.version).toBe("supacloud_003");
-    expect(migrations.at(-2)?.version).toBe("supacloud_003");
-    expect(migrations.at(-1)?.version).toBe("supacloud_004");
+    expect(migrations).toHaveLength(26);
+    expect(migrations.at(-2)?.version).toBe("supacloud_002");
+    expect(migrations.at(-1)?.version).toBe("supacloud_003");
     const script = renderInstall(migrations, "fixture", "postgres");
     expect(script).toContain("pg_advisory_xact_lock");
     expect(script).toContain("PGFLOW_MIGRATION_CHECKSUM_MISMATCH");
@@ -119,20 +116,16 @@ describe("pgflow process adapter", () => {
     expect(bounded?.sql).toContain("WORKER_QUEUE_OWNERSHIP");
     expect(bounded?.sql).not.toContain("DROP TABLE");
     expect(bounded?.sql).not.toContain("admission_installation");
-    const sharded = migrations.find((migration) => migration.version === "supacloud_004");
-    expect(sharded?.sql).toContain("pgmq.metrics_all");
-    expect(sharded?.sql).toContain("WORKER_QUEUE_FULL");
   });
 
   test.skipIf(process.env.PGFLOW_DATABASE_ACCEPTANCE !== "1")(
     "real database installation, task API and kill/restart recovery",
     async () => {
-      const migrationCount = (await loadMigrations()).length;
       await withPgflowDatabase(async (db, url, install) => {
         await Promise.all([install(), install()]);
         const [receipt] =
           await db`SELECT count(*)::int AS count FROM supacloud_worker.migrations`;
-        expect(receipt.count).toBe(migrationCount);
+        expect(receipt.count).toBe(26);
         await expect(install("wrong-project")).rejects.toThrow(
           "PGFLOW_INSTALLATION_BINDING_MISMATCH",
         );
@@ -213,9 +206,6 @@ describe("pgflow process adapter", () => {
               ...process.env,
               WORKER_TEST_DATABASE_URL: url,
               WORKER_TEST_RUN_ID: warmupRun.run_id,
-              MASTER_TOKEN: "m".repeat(32),
-              JWT_SECRET: "j".repeat(32),
-              DASHBOARD_PASSWORD: "d".repeat(32),
             },
           });
           expect(new TextDecoder().decode(route.stderr)).toBe("");

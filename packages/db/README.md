@@ -1,25 +1,43 @@
 # @supacloud/db
 
-## Drizzle, Read Queries and SQL Impact
+## Reverse Adoption and Role Guards
 
-Use `defineDrizzleDatabaseModule` and `createDrizzleCommandDatabase` from
-`@supacloud/db/drizzle`, or `createBunDrizzleCommandDatabase` from
-`@supacloud/db/drizzle-bun`. Authorization, business writes, receipts and audit
-share one transaction connection. Do not use the outer pool for command writes
-or retain `transaction.db` after the transaction. The adapter currently targets
-`drizzle-orm@1.0.0-rc.4`, not a stable 1.0 release.
+`reverseDatabase(executor, schemas)` captures a review-only catalog/column
+candidate in a pinned read-only transaction. It does not overwrite sources or
+register applied migrations. `readDatabaseRole` and
+`assertApplicationRoleRestricted` check selected-schema role privileges and
+ownership; `renderDatabaseRoleGuardSql` renders reviewed provisioning SQL without
+executing it. Review privileged function entrypoints independently.
 
-`executeDecodedSql` keeps SQL results unknown until an explicit decoder validates
-them. Use parameterized templates; `sql<T>` alone does not validate returned data.
-The optional `@supacloud/commands/typebox` contract can use schemas derived through
-`drizzle-orm/typebox-legacy`, selecting public fields rather than accepting
-internal tenant/permission fields.
+The project CLI exposes `db reverse`, `db diff`, `db plan`, `db apply`,
+`db role_check` and `db role_sql`. See
+[Database Adoption Workflow](../../docs/database-adoption-workflow.md) for the
+manual declarative SQL baseline boundary, exact-digest approval and existing-ledger
+delivery. These commands do not provide automatic production synchronization
+or down migrations.
+## ZenStack and Bun SQL
 
-`defineReadQuery` combines input decoding, authorization, result decoding and
-payload-free observation. `createBunReadDatabase` admits one parsed SELECT and
-runs a PostgreSQL READ ONLY transaction with a statement timeout.
-`createBunDrizzleReadDatabase` provides the read transaction boundary for Drizzle.
-Keep least-privilege roles and RLS; AOP does not replace them.
+Author models and data policies in `zenstack/schema.zmodel`, generate contracts
+with `supacloud-model generate`, and fail stale builds with `supacloud-model check`.
+`supacloud-model diff --candidate <file>` and `pull --candidate <file>` require an
+explicit `SUPACLOUD_MODEL_DATABASE_URL` and never apply migrations. Use the
+existing SupaCloud deployment ledger after reviewing candidates.
+
+Construct `createZenStackDatabase(schema, pool, {})` from `@supacloud/db/zenstack`
+inside `src/host`. Bind a verified identity using `forIdentity(identity)`; inject
+its read-only `models` facade into queries and its `commandStore` into the command
+runtime. Command handlers receive `transaction.db` with model writes. Model
+writes, receipts and audit share one reserved Bun SQL connection. No facade exposes
+raw SQL, plugin controls, identity replacement or nested transactions. The caller
+owns `pool.close()`. The internal dialect uses upstream Kysely's PostgreSQL
+compiler; cursor streaming is explicitly unsupported.
+
+`defineReadQuery` and `createBunReadDatabase` remain available for reviewed native
+platform reads, with result decoders, read-only transactions and timeouts. Keep
+least-privilege roles and RLS for all direct PostgREST/RPC access. Model policies
+do not replace database permissions.
+
+See [the breaking upgrade guide](../../docs/architecture/zenstack-upgrade.md).
 
 `supacloud-sql-impact impact.json --check` analyzes ordered, owned migrations:
 
@@ -43,10 +61,6 @@ review. This is conservative analysis, not proof of arbitrary SQL safety. Approv
 the exact reviewed report via `approvedDigest`; changes invalidate approval, and
 approval never overrides history errors. The tool does not execute migrations.
 
-The focused `tests/drizzle-foundation.test.ts` test needs Docker and starts a
-disposable local PostgreSQL/PGMQ instance. Prepare Commands and Compiler package
-dependencies first using `scripts/build-command-dependencies.ts db`.
-
 ## Durable Commands
 
 `createPostgresCommandStore(database)` implements the protocol's storage ports.
@@ -57,8 +71,7 @@ and input redaction. It does not own a recovery polling queue.
 Execution factories moved to `@supacloud/commands`; pass `store` instead of
 `database`. Errors moved to `CommandError` in `@supacloud/contracts`. Neither
 remote sending nor command orchestration is re-exported here. The DB package
-does not depend on the command runtime in production. The Drizzle integration
-test uses the command runtime to verify the shared transaction boundary.
+does not depend on the command runtime in production. The model integration regression verifies the shared transaction boundary.
 
 Install the existing PGMQ/Workflow runtime and updated commands-public SQL module,
 then `COMMAND_PERSISTENCE_SQL` through a privileged application migration.
@@ -76,11 +89,11 @@ distributed transaction. See [migration, deployment and recovery](../../docs/com
 
 For reviewed deployment-time public SQL parameters, see
 [Controlled Migration Bindings](./MIGRATION_BINDINGS.md). This opt-in API preserves
-Drizzle v1 source/snapshot ownership and the existing executor's migration ledger.
+model source ownership and the existing executor's migration ledger.
 
 SupaCloud 的数据库治理层：把 RLS 策略、RPC 函数、触发器、授权（grant）作为**一等资源**做声明式管理，并与 PostgreSQL 真实 Catalog 对账。
 
-定位：它是 Drizzle（schema/迁移）之上的治理层 —— Drizzle 负责表结构，本包负责表结构之外的安全与业务对象（策略、函数、权限）的声明、静态检查与漂移检测。**driver 无关**：所有 Catalog 读取都通过注入的 `QueryExecutor` 完成，不依赖任何数据库客户端，也不 import drizzle-orm（仅类型层兼容 drizzle Table 的内部形状）。
+定位：ZModel 负责业务模型和数据策略，ZenStack 执行模型查询；本包负责 Bun SQL 适配、Command 事务，以及 RLS/RPC 的声明、静态检查和漂移检测。Catalog 读取通过注入的 `QueryExecutor` 完成。
 
 ## 目录约定示例
 
@@ -96,11 +109,10 @@ db/
 ```ts
 import { createDatabaseAccessBoundary, defineDatabaseModule } from '@supacloud/db';
 import { requireTrustedIdentity } from '@supacloud/elysia';
-import { cases } from './schema'; // drizzle 表对象
 
 export const casesModule = defineDatabaseModule({
   name: 'cases',
-  tables: [cases], // 也接受 'public.cases' 字符串
+  tables: ["public.cases"], // 也接受 'public.cases' 字符串
   policies: [
     {
       name: 'cases_select',
@@ -125,39 +137,6 @@ export const casesModule = defineDatabaseModule({
   ],
 });
 ```
-
-## Role Matrix
-
-`buildRoleMatrix` combines the declared modules with a `readCatalog()` result
-into one table x role x operation view. It is a read-only diagnostic: it does
-not create policies or grants, and a `yes` cell is not proof that a specific row
-is authorized.
-
-```ts
-import { buildRoleMatrix, formatRoleMatrix, readCatalog } from "@supacloud/db";
-
-const catalog = await readCatalog(executor, ["public"]);
-const report = buildRoleMatrix([caseDb], catalog, {
-  roles: ["anon", "authenticated", "service_role"],
-  bypassRlsRoles: ["service_role"],
-});
-
-console.log(formatRoleMatrix(report));
-if (!report.ok) throw new Error("Role matrix has blocking issues");
-```
-
-The report distinguishes:
-
-- `yes`: grant + applicable policy (or an explicit RLS bypass role);
-- `bypass`: effective through an explicit `bypassRlsRoles` entry;
-- `grant`: grant exists but RLS has no applicable policy;
-- `policy`: policy exists but the role lacks the grant;
-- `-`: neither.
-
-Issues include `missing-table`, `rls-disabled`, `rls-no-policy`,
-`public-grant`, `grant-without-policy` and `policy-without-grant`. Pass real
-custom roles explicitly; `PUBLIC` is rejected as a concrete role because it is
-not a role you can preview.
 
 ## API
 
@@ -268,7 +247,7 @@ authorization, migration execution or automatic HTTP client generation.
 
 **幂等要求**：step.sql 必须可重复执行（`create or replace function`、`drop policy if exists` + `create policy`、`drop trigger if exists` + `create trigger`、`grant` 天然幂等）。sha256 一致即跳过，因此改源文件才会触发重放。executor 提供可选 `transaction(fn)` 时用它管理事务，否则退化为顺序执行 `begin/commit/rollback` 语句。
 
-**与 migration 的边界**：本执行器只管模块声明的**可重复 SQL 对象**（函数/策略/触发器/授权），不做表结构变更 —— 建表、加列等表结构演进仍走前向 migration（Drizzle/SQL migration 文件）。
+**与 migration 的边界**：本执行器只管模块声明的**可重复 SQL 对象**（函数/策略/触发器/授权），不做表结构变更 —— 建表、加列等表结构演进仍走前向 migration（reviewed SQL migration 文件）。
 
 ## 与 Supabase / PostgreSQL 的关系
 
@@ -288,7 +267,7 @@ bun run build       # bun build --target node + tsc 声明文件
 
 `supacloud-db assess|generate|check --root <project>` provides offline source-boundary
 assessment, RPC contracts and freshness checks. Use `database.sources.json` to
-separate Drizzle declarations, maintained function SQL, append-only migrations,
+separate ZModel declarations, maintained function SQL, append-only migrations,
 derived contracts and audit output. `check` and `assess` never write or connect;
 `generate` only writes derived contracts and refuses changes to recorded migration
 history. See the repository's `docs/database-source-contracts.md` for adoption.

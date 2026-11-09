@@ -49,6 +49,23 @@ export interface PgredisRuntimeServiceOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** Keep the cache control-plane connection pool isolated from unrelated fetches. */
+export function createPgredisFetch(): typeof fetch {
+  type FetchSession = { fetch: typeof fetch };
+  type FetchSessionConstructor = new (init?: {
+    keepAlive?: { idleTimeout?: number; maxIdleSockets?: number };
+  }) => FetchSession;
+  const runtime = globalThis as typeof globalThis & {
+    Bun?: { FetchSession?: FetchSessionConstructor };
+  };
+  const FetchSession = runtime.Bun?.FetchSession;
+  if (FetchSession) {
+    const session = new FetchSession({ keepAlive: { idleTimeout: 30, maxIdleSockets: 8 } });
+    return session.fetch as typeof fetch;
+  }
+  return fetch;
+}
+
 function jsonObject(candidate: unknown): Record<string, unknown> {
   return candidate && typeof candidate === "object" && !Array.isArray(candidate)
     ? candidate as Record<string, unknown>
@@ -71,7 +88,7 @@ export class PgredisRuntimeService {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly options: PgredisRuntimeServiceOptions) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? createPgredisFetch();
   }
 
   async platformStatus(): Promise<PgredisPlatformStatus> {

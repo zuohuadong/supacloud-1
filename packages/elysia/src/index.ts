@@ -125,8 +125,16 @@ export interface CompiledRoute {
       context?: unknown;
     },
   ) => Promise<unknown> | unknown;
+  /** Generated handler input fields; omitted for legacy/custom invokers. */
+  inputFields?: readonly ("body" | "params" | "query" | "headers" | "cookie" | "context")[];
   /** Compiler-emitted Elysia-context invoker for routes without SupaCloud stages. */
   directInvoker?: (controller: unknown, context: unknown) => Promise<unknown> | unknown;
+  /** Generated direct invoker that avoids repeated controller shape checks. */
+  directInvokerFast?: (
+    controller: Record<string, unknown>,
+    handler: (...args: unknown[]) => unknown,
+    context: unknown,
+  ) => Promise<unknown> | unknown;
   /** Compiler-selected execution plan. Older artifacts default to the full pipeline. */
   executionMode?: "direct" | "pipeline";
   /** Class name of the @Command explicitly bound to this route. */
@@ -175,6 +183,8 @@ export interface CompiledController {
   routes: CompiledRoute[];
 }
 
+export type CompiledRouteRegistrar = (controller: CompiledController, route: CompiledRoute, path: string) => void;
+
 export interface CompiledModule {
   name: string;
   createServices(
@@ -198,6 +208,8 @@ export interface CompiledModule {
   ): Record<string, unknown> | Promise<Record<string, unknown>>;
   destroyJobScope?(scope: Record<string, unknown>): Promise<void>;
   controllers: CompiledController[];
+  /** Required for HTTP modules. Recompile artifacts when upgrading the adapter. */
+  registerRoutes?(register: CompiledRouteRegistrar): void;
   commands?: CompiledCommand[];
   jobs?: CompiledJob[];
   /** Statically generated module aspects. */
@@ -905,16 +917,20 @@ export async function previewCompiledCommand<Input>(options: {
   return preview;
 }
 
-function once(next: () => unknown | Promise<unknown>): () => Promise<unknown> {
+function once(next: () => unknown | Promise<unknown>): () => unknown | Promise<unknown> {
   let called = false;
-  return async () => {
+  return () => {
     if (called) {
-      throw new ApplicationError("Command continuation called multiple times", {
+      return Promise.reject(new ApplicationError("Command continuation called multiple times", {
         code: "COMMAND_CONTINUATION_REUSED",
-      });
+      }));
     }
     called = true;
-    return await next();
+    try {
+      return next();
+    } catch (error) {
+      return Promise.reject(error);
+    }
   };
 }
 
@@ -1079,25 +1095,30 @@ export function createModulePlugin<
   compiled: CompiledModule,
   services: Services,
   ctxFactory: HttpRequestContextFactory<Http> = defaultRequestContext,
-  options: Pick<ApplicationOptions<Http>, "http" | "httpPolicies" | "commandGovernance" | "commandExecutor" | "errorMapper" | "onExecution" | "normalize"> = {},
+  options: Pick<ApplicationOptions<Http>, "http" | "httpPolicies" | "commandGovernance" | "commandExecutor" | "errorMapper" | "onExecution" | "normalize"> & {
+    /** Internal root-app mode: no native routes are appended to this module plugin. */
+    compiledOnly?: boolean;
+  } = {},
   imported: Record<string, Record<string, unknown>> = {},
   pendingWork?: PendingWorkRegistry,
 ) {
-  // Compiled descriptors are also loadable from JavaScript and older generators.
+  // Compiled descriptors are also loadable from JavaScript.
   // Reject options we cannot preserve instead of silently dropping native hooks.
   const supportedMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
   const supportedFields = new Set([
     "method", "path", "handler", "body", "params", "query", "headers", "cookie",
     "response", "responses", "contract", "schemaKinds", "nativeResponse", "invoker",
-    "directInvoker", "executionMode",
+    "directInvoker", "directInvokerFast", "inputFields", "executionMode",
     "command", "aspects", "aspectPipeline",
     "paramTransforms", "paramDefaults", "queryTransforms", "queryDefaults", "title", "data",
     // defineJsonContract can be spread into a route; these helpers are not hooks.
     "input", "result", "request",
     "parse", "allowDeleteBody",
   ]);
+  const pendingRoutes = new Map<CompiledRoute, CompiledController>();
   for (const controller of compiled.controllers) {
     for (const route of controller.routes) {
+      pendingRoutes.set(route, controller);
       const unsupported = Object.keys(route).filter((field) => !supportedFields.has(field));
       if (!supportedMethods.has(route.method) || unsupported.length > 0) {
         throw new ApplicationError(
@@ -1121,6 +1142,13 @@ export function createModulePlugin<
         );
       }
     }
+  }
+  if ((compiled.controllers.some((controller) => controller.routes.length > 0) || compiled.registerRoutes !== undefined)
+    && typeof compiled.registerRoutes !== "function") {
+    throw new ApplicationError(
+      `Module "${compiled.name}" requires a compiler-emitted registerRoutes plan. Upgrade @supacloud/compiler with @supacloud/elysia and recompile the application.`,
+      { code: "COMPILED_ROUTE_REGISTRATION_REQUIRED" },
+    );
   }
   const hasCommandRoutes = compiled.controllers.some((controller) =>
     controller.routes.some((route) => route.command !== undefined),
@@ -1154,15 +1182,45 @@ export function createModulePlugin<
     : (options.commandExecutor ?? governanceExecutor);
   const modulePipeline = descriptorPipeline(compiled, `module:${compiled.name}`, options.onExecution);
 
-  const needsRequestState = ctxFactory !== defaultRequestContext
+  // These options apply to every route in the module. Route-local pipeline
+  // work is split below so a direct route does not inherit another route's
+  // request-state hooks merely because they share a module.
+  const sharedRequestState = ctxFactory !== defaultRequestContext
     || pendingWork !== undefined
     || options.httpPolicies !== undefined
     || options.onExecution !== undefined
     || compiled.createRequestScope !== undefined
     || compiled.aspectPipeline !== undefined
-    || compiled.controllers.some((controller) => controller.routes.some((route) => route.executionMode !== "direct"));
-  const basePlugin = mountHttp(options.http, `supacloud:${compiled.name}`, options.normalize ?? true);
-  const plugin = (needsRequestState ? basePlugin.derive((context) => {
+    || (compiled.aspects?.length ?? 0) > 0
+    || options.errorMapper !== undefined;
+  const servicesContext = { services };
+  const moduleBasePlugin = (options.compiledOnly === true && options.http === undefined
+    ? new Elysia({ name: `supacloud:${compiled.name}`, normalize: options.normalize ?? true })
+    : mountHttp(options.http, `supacloud:${compiled.name}`, options.normalize ?? true)) as unknown as Elysia;
+  const plugin = (options.compiledOnly === true
+    ? moduleBasePlugin
+    : moduleBasePlugin.derive(() => servicesContext)) as unknown as Elysia;
+  const hasRouteLocalState = compiled.controllers.some((controller) => controller.routes.some((route) =>
+    route.executionMode !== "direct"
+    || route.command !== undefined
+    || route.aspectPipeline !== undefined
+    || (route.aspects?.length ?? 0) > 0));
+  const directPlugin = !sharedRequestState && hasRouteLocalState
+    ? new Elysia({
+      name: `supacloud:${compiled.name}:direct`,
+      normalize: options.normalize ?? true,
+    })
+    : plugin;
+  let statefulPlugin: Elysia | undefined;
+  const createRequestScope = compiled.createRequestScope;
+  const requestScopes = new WeakMap<Request, Record<string, unknown>>();
+  const getStatefulPlugin = (): Elysia => {
+    if (statefulPlugin) return statefulPlugin;
+    const base = new Elysia({
+      name: `supacloud:${compiled.name}:pipeline`,
+      normalize: options.normalize ?? true,
+    });
+    statefulPlugin = base.derive((context) => {
       if (pendingWork?.closed) throw new ApplicationError("Application is stopping", { status: 503, code: "APPLICATION_STOPPING" });
       let complete: (() => void) | undefined;
       try {
@@ -1182,22 +1240,21 @@ export function createModulePlugin<
       };
       const requestContext = ctxFactory(context.request, context as ApplicationHttpContext<Http>, signal);
       return isPromiseLike(requestContext) ? requestContext.then(finish) : finish(requestContext);
-    }) : basePlugin) as unknown as Elysia;
-
-  const createRequestScope = compiled.createRequestScope;
-  const requestScopes = new WeakMap<Request, Record<string, unknown>>();
-  if (needsRequestState) plugin.onAfterResponse(async ({ request }) => {
-    const scope = requestScopes.get(request);
-    requestScopes.delete(request);
-    try {
-      if (scope) await compiled.destroyRequestScope?.(scope);
-    } catch (error) {
-      console.error(`supacloud: request scope cleanup failed for "${compiled.name}"`, error);
-    } finally {
-      requestCompletions.get(request)?.();
-      requestCompletions.delete(request);
-    }
-  });
+    }) as unknown as Elysia;
+    statefulPlugin.onAfterResponse(async ({ request }) => {
+      const scope = requestScopes.get(request);
+      requestScopes.delete(request);
+      try {
+        if (scope) await compiled.destroyRequestScope?.(scope);
+      } catch (error) {
+        console.error(`supacloud: request scope cleanup failed for "${compiled.name}"`, error);
+      } finally {
+        requestCompletions.get(request)?.();
+        requestCompletions.delete(request);
+      }
+    });
+    return statefulPlugin;
+  };
   // Bind before routes and keep the handler local to its module's request context.
   const mapError = async (
     error: unknown,
@@ -1225,10 +1282,13 @@ export function createModulePlugin<
 
   // Compiled descriptors carry runtime schemas, not native literal route types.
   // Widen only registration; keep the public plugin's context/service inference.
-  const routeRegistrar = plugin as unknown as Elysia;
-  for (const controller of compiled.controllers) {
-    for (const route of controller.routes) {
-      const path = joinPaths(controller.path, route.path);
+  const registerRoute: CompiledRouteRegistrar = (controller, route, path) => {
+      if (pendingRoutes.get(route) !== controller || typeof path !== "string" || !path.startsWith("/")) {
+        throw new ApplicationError(`Invalid static route registration in module "${compiled.name}". Recompile the application.`, {
+          code: "COMPILED_ROUTE_REGISTRATION_INVALID",
+        });
+      }
+      pendingRoutes.delete(route);
       const documentation = route.data?.openapi;
       const hidden = documentation !== null && typeof documentation === "object"
         && "hide" in documentation && documentation.hide === true;
@@ -1246,6 +1306,13 @@ export function createModulePlugin<
         } } : {}),
       };
       const policies = compileHttpPolicies(route, path, options.httpPolicies);
+      const routeNeedsRequestState = sharedRequestState
+        || route.executionMode !== "direct"
+        || route.command !== undefined
+        || route.aspectPipeline !== undefined
+        || (route.aspects?.length ?? 0) > 0
+        || policies.length > 0;
+      const routeRegistrar = (routeNeedsRequestState ? getStatefulPlugin() : directPlugin) as unknown as Elysia;
       if (policies.length > 0) {
         Object.assign(schema, {
           beforeHandle: async (context: ApplicationHttpContext<Http>) => {
@@ -1279,7 +1346,7 @@ export function createModulePlugin<
             for (const policy of mappingPolicies) {
               const result = await policy.mapResponse!({
                 http: context, requestContext: requestContexts.get(context.request), response,
-                encodeResponse: async (value) => {
+                encodeResponse: (value) => {
                   const validator = responseValidators?.get(responseStatusOf(value, context.set.status));
                   if (!validator) return value;
                   if (!("EncodeFrom" in validator) || typeof validator.EncodeFrom !== "function") {
@@ -1287,9 +1354,9 @@ export function createModulePlugin<
                   }
                   if ("mayReturnPromise" in validator && validator.mayReturnPromise
                     && "From" in validator && typeof validator.From === "function") {
-                    return await Reflect.apply(validator.From, validator, [value, "response", true]);
+                    return validator.From.call(validator, value, "response", true);
                   }
-                  return await Reflect.apply(validator.EncodeFrom, validator, [value, "response"]);
+                  return validator.EncodeFrom.call(validator, value, "response");
                 },
               });
               if (result !== undefined) {
@@ -1316,15 +1383,31 @@ export function createModulePlugin<
         });
       }
 
-      const handler = async (ctx: HttpContext) => {
-        // The compiler marks routes that have no SupaCloud execution stages.
-        // Let Elysia's AOT decoder feed the generated positional handler
-        // directly; do not allocate the generic input envelope or enter the
-        // aspect/command pipeline for this route.
-        if (route.executionMode === "direct" && route.directInvoker
-          && policies.length === 0 && responsePolicies.length === 0 && mappingPolicies.length === 0) {
-          return route.directInvoker(services[controller.serviceKey], ctx);
+      const directRoute = route.executionMode === "direct" && route.directInvoker !== undefined
+        && policies.length === 0 && responsePolicies.length === 0 && mappingPolicies.length === 0
+        && compiled.aspectPipeline === undefined && (compiled.aspects?.length ?? 0) === 0
+        && route.aspectPipeline === undefined && (route.aspects?.length ?? 0) === 0
+        && route.command === undefined;
+      const directController = directRoute && route.directInvokerFast !== undefined
+        ? controllerInstance(services[controller.serviceKey]) : undefined;
+      // Keep the direct AOT path synchronous when the generated controller is
+      // synchronous. An async wrapper would allocate a Promise for every
+      // request and erase the benefit of bypassing the SupaCloud pipeline.
+      // I have nothing but my burger and I want nothing more
+      const handler = directRoute
+        ? (ctx: HttpContext) => {
+          const directHandler = directController?.[route.handler];
+          if (route.directInvokerFast !== undefined && directController
+            && typeof directHandler === "function") {
+            return route.directInvokerFast(
+              directController,
+              directHandler as (...args: unknown[]) => unknown,
+              ctx,
+            );
+          }
+          return route.directInvoker!(services[controller.serviceKey], ctx);
         }
+        : async (ctx: HttpContext) => {
         const requestContext = requestContexts.get(ctx.request);
         const execute = async () => {
           const requestScope = createRequestScope
@@ -1335,7 +1418,7 @@ export function createModulePlugin<
             controller.scope === "request" ? requestScope : services;
           const instance = source?.[controller.serviceKey];
           const normalizedCookie = ctx.cookie === undefined ? undefined : cookieValues(ctx.cookie);
-          const input = {
+          const input = route.inputFields === undefined ? {
             body: ctx.body,
             params: ctx.params,
             query: ctx.query,
@@ -1345,15 +1428,28 @@ export function createModulePlugin<
             request: ctx.request,
             ...(requestScope ? { scope: requestScope } : {}),
             requestContext,
+          } : {
+            body: ctx.body,
+            params: ctx.params,
+            query: ctx.query,
+            ...(route.inputFields.includes("headers")
+              ? { headers: ctx.headers ?? Object.fromEntries(ctx.request.headers.entries()) } : {}),
+            ...(route.inputFields.includes("cookie") && normalizedCookie !== undefined
+              ? { cookie: normalizedCookie } : {}),
+            ...(route.inputFields.includes("context") ? { context: requestContext } : {}),
           };
           const handlerCall = () => routeInvoker(instance, input);
-          const invoke = once(() => route.command && options.commandGovernance ? handlerCall()
-            : observeExecution(options.onExecution, {
-              kind: route.command ? "command" : "route",
-              operation: route.command ?? `${route.method} ${path}`,
-              stage: "handler",
-              ...executionTrace(requestContext),
-            }, handlerCall));
+          const invoke = once(() => route.command && options.commandGovernance
+            ? handlerCall()
+            : options.onExecution
+              ? observeExecution(options.onExecution, {
+                kind: route.command ? "command" : "route",
+                operation: route.command ?? `${route.method} ${path}`,
+                stage: "handler",
+                ...executionTrace(requestContext),
+              }, handlerCall)
+              : handlerCall());
+
           const routeContext: ApplicationAspectContext = {
             kind: "route",
             name: `${route.method} ${path}`,
@@ -1364,9 +1460,9 @@ export function createModulePlugin<
             services,
             metadata: route,
           };
-          const commandContext: ApplicationAspectContext = {
-            kind: "command",
-            name: command?.name ?? route.command ?? `${route.method} ${path}`,
+          const commandContext = route.command === undefined ? routeContext : {
+            kind: "command" as const,
+            name: command?.name ?? route.command,
             input,
             request: ctx.request,
             requestContext,
@@ -1436,9 +1532,16 @@ export function createModulePlugin<
           routeRegistrar.options(path, schema, handler);
           break;
       }
-    }
+  };
+  compiled.registerRoutes?.(registerRoute);
+  if (pendingRoutes.size > 0) {
+    throw new ApplicationError(`Incomplete static route registration in module "${compiled.name}". Recompile the application.`, {
+      code: "COMPILED_ROUTE_REGISTRATION_INVALID",
+    });
   }
 
+  if (directPlugin !== plugin) plugin.use(directPlugin);
+  if (statefulPlugin) plugin.use(statefulPlugin);
   return plugin;
 }
 
@@ -1612,7 +1715,7 @@ export function createApplication<const Http extends AnyElysia = Elysia>(
       module,
       services,
       ctxFactory,
-      { ...options, http: undefined },
+      { ...options, http: undefined, compiledOnly: true },
       imported,
       options.pendingWork ? pendingWork : undefined,
     ));
@@ -1704,7 +1807,6 @@ export { createMemoryPolicy } from "./memory_policy";
 export type { MemoryPolicy } from "./memory_policy";
 export {
   createQueueWorkerTransport,
-  createRabbitMqQueuePort,
   createWorker,
   SupaCloudWorker,
   WorkerRegistrationError,
@@ -1720,9 +1822,6 @@ export type {
   WorkerQueueMessage,
   WorkerQueuePort,
   WorkerQueueReceiveOptions,
-  RabbitMqChannel,
-  RabbitMqMessage,
-  RabbitMqQueuePortOptions,
   WorkerReceiptContext,
   WorkerReceiptOperation,
   WorkerRunResult,

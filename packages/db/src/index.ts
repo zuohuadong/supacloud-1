@@ -2,7 +2,6 @@ export {
   defineDatabaseModule,
   type DatabaseModule,
   type DatabaseModuleOptions,
-  type DrizzleTableLike,
   type FunctionDecl,
   type GrantDecl,
   type PolicyDecl,
@@ -35,6 +34,22 @@ export { lintModule, lintSql, type LintIssue } from './lint.js';
 export { planModule, type ModulePlan, type PlanStep } from './plan.js';
 
 export { applyModulePlan, type ApplyResult } from './apply.js';
+
+export {
+  reverseDatabase,
+  renderReverseSnapshot,
+  type DatabaseColumn,
+  type DatabaseReverseSnapshot,
+  type DatabaseReverseTable,
+} from './reverse.js';
+
+export {
+  readDatabaseRole,
+  assertApplicationRoleRestricted,
+  renderDatabaseRoleGuardSql,
+  type DatabaseRoleGuardOptions,
+  type DatabaseRoleState,
+} from './role-guard.js';
 
 export {
   migrationBindingSha256,
@@ -93,3 +108,11 @@ export { defineReadQuery, decodePostgrestQuery, QueryBoundaryError, type QueryEv
 export {
   createPostgresCommandStore, type CommandDatabase, type CommandTransaction, type CommandSubmissionBinding,
 } from "./command-adapter";
+
+export {
+  planMigrationRebase,
+  rebaseMigrations,
+  type MigrationRebaseOptions,
+  type MigrationRebasePlan,
+  type RebaseMigrationInput,
+} from "./migration-rebase.js";

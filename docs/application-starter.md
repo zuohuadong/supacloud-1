@@ -17,18 +17,28 @@ Business persistence and authorization remain application-owned.
 The default is now `minimal`: a feature-local health endpoint, its test, compiler,
 Elysia host and frontend SDK dependencies. It does not generate approval,
 attachments, Worker or GraphQL examples. Use `--template command` for the complete
-durable reference described below, or explicitly select `http` / `edge`.
-Existing applications and explicit recipe layouts are not reorganized.
+durable reference described below. HTTP routes and background jobs are added
+through `app generate`; there are no separate `http` or `edge` starter templates.
+Existing applications are not reorganized.
 
 After the CLI release containing this command is published:
 
 ```sh
-supacloud-cli app init --root ./orders --name orders
+supacloud app init --root ./orders --name orders
 cd orders
 bun install
 bun run check
 bun run dev
 ```
+
+Agent-driven setup can request the same handoff without parsing human text:
+
+```sh
+supacloud app init --root ./orders --name orders --format json
+```
+
+The JSON result contains the absolute root, normalized name, template, generated
+file list, next commands and the local-only production boundary.
 
 Release the matching `@supacloud/app` with its `/core` export before publishing
 the CLI that emits these imports. Source tests and candidate-package overrides
@@ -38,24 +48,25 @@ The published CLI also exposes the same local loop through an application-level
 entry, without reaching for a remote test server:
 
 ```sh
-supacloud-cli app dev --profile fast          # local/ephemeral, safe defaults
+supacloud app dev --profile fast          # local/ephemeral, safe defaults
 # In the explicit command recipe, after database setup:
-supacloud-cli app dev --profile integration   # requires an explicit loopback database URL
+supacloud app dev --profile integration   # requires an explicit loopback database URL
 ```
 
-The project CLI binary also supports `supacloud-cli app init`. Initialization is
+The project CLI binary also supports `supacloud app init`. Initialization is
 local, needs no account or API token, never installs dependencies automatically,
 and refuses non-empty or symlink targets. A `.git` directory is allowed. `--force`
 does not bypass overwrite protection.
 
 The explicit `--template command` reference contains:
 
-- Drizzle table declarations and inferred row types, separate migration/introspection
-  candidate outputs, and an offline database-source contract gate in default check/build;
+- ZModel table declarations and inferred row types, separate migration/introspection
+  candidate outputs, a database-source contract gate and live Catalog reconciliation
+  in default check/build;
 - three separated framework packages, TypeScript configuration and strict compiler capabilities;
 - a typed review feature with a state specification, route schemas and static AOP;
-- Database First GraphQL query contracts as the recommended read path, a synthetic offline schema fixture, generated typed
-  client and a deterministic client test (see [GraphQL Query Contracts](./graphql-query-contracts.md));
+- PostgREST / `@supabase/supabase-js` as the default read path; GraphQL query
+  contracts remain an explicit opt-in (see [GraphQL Query Contracts](./graphql-query-contracts.md));
 - a loopback-only memory demo and regression tests for permissions, idempotency,
   transaction rollback, state/version conflicts and absent runtime adapters;
 - semantic watch/recompile/restart, with the last good artifacts preserved on errors;
@@ -68,28 +79,37 @@ New compiler and runtime fixes must be published with the CLI feature. Before
 publication, `bun run scripts/check_app_starter.ts` tests locally packed artifacts
 together; this is not evidence that those versions already exist on npm.
 
-The default command template includes database tooling. HTTP/Edge templates do not
-install Drizzle or require `db:generate`. For the command template, `db:generate`
-is an explicit first-use setup step after installation; commit `db/contracts/`.
+The command template includes database tooling; the minimal template does not
+install ZenStack or require `db:generate`. For the command template, `db:generate`
+is an explicit first-use setup step after installation; commit `zenstack/generated/` and `db/contracts/`.
 Later default checks refuse stale contracts instead of silently regenerating them.
+New command projects generate `db/modules.ts` at the compiler's default
+`databaseGovernance.moduleFile` path; the generated config fixes `mode` to
+`check`, so compile/check/build run the offline source-contract gate without a
+database.
+`dev:integration` requires the CLI's explicit loopback database URL and runs SQL
+lint plus live Catalog reconciliation; selecting `enforce` explicitly does the
+same for compile/check/build against an explicitly supplied `DATABASE_URL`.
+Neither path silently falls back from enforce to check.
 `supacloud app check`, `doctor` and `build` also invoke the project's installed database
 checker when `database.sources.json` is present. See
 [Database Source Contracts](./database-source-contracts.md) for existing-project
 assessment, source boundaries, precision and migration adoption.
 
-Database First is the only GraphQL server-schema model. The fixture is not an
-application-owned server SDL: change Drizzle/SQL declarations, migrate, then
-replace it with an intended-role database export before integration. Do not
-hand-edit exported schemas or add GraphQL resolver classes. After database/grant
-changes and before promotion, use `graphql-schema --check` against the selected
-database, then refresh intentionally and run generated-artifact, type and RLS
-checks. Offline compilation does not attest database provenance or freshness.
+Database First is the only GraphQL server-schema model when GraphQL is explicitly
+selected. The command starter does not generate a GraphQL schema or query. Change
+ZModel/SQL declarations, migrate, then export an intended-role database snapshot
+before adding a Query Contract. Do not hand-edit exported schemas or add GraphQL
+resolver classes. After database/grant changes and before promotion, use
+`graphql-schema --check` against the selected database, then refresh intentionally
+and run generated-artifact, type and RLS checks. Offline compilation does not
+attest database provenance or freshness.
 
 ## Local Development Entry
 
-`supacloud-cli app dev` runs the project's `dev` script, so it and `bun run dev`
+`supacloud app dev` runs the project's `dev` script, so it and `bun run dev`
 share the same watch/recompile/restart loop. It does not add a second watcher.
-`supacloud-cli app watch` is the compile-only inspection command.
+`supacloud app watch` is the compile-only inspection command.
 For compatibility, `app dev --once` / `--watch=false` remain compile-only.
 Remote test-server sync, migration generation and remote reload remain
 `supacloud dev sync`, `supacloud dev migrate` and `supacloud dev watch`.
@@ -116,8 +136,9 @@ Shutdown waits for an already-running recompile to finish; it does not abort a
 write midway. Cancellation during startup and watcher-setup failures settle
 without leaving a pending `ready` promise or live watcher behind.
 
-Both `--database-url` and the existing `--database_url` are accepted, but not
-together. The explicit flag takes precedence over `SUPACLOUD_DEV_DATABASE_URL`;
+The CLI resolves `--database-url` to the declared `database_url` field; supplying
+both spellings is rejected as a duplicate. The explicit flag takes precedence
+over `SUPACLOUD_DEV_DATABASE_URL`;
 an explicitly empty flag is rejected rather than falling back to the environment.
 Integration accepts only `postgres://` or `postgresql://` URLs with a host, omits
 userinfo, query parameters and fragments from reports, and never echoes an
@@ -195,10 +216,37 @@ Use `onExecution` for metadata-only execution traces and compiler `context`/`exp
 for static plans. Real SupAuth sessions and durable database integration remain
 deployment acceptance gates, not properties established by the memory demo.
 
-`bun run build` produces `dist/application.js`, not a deployed service. Its
+`bun run build` produces `output/supacloud/application.js`, not a deployed service. Its
 `createApp(adapters)` factory requires trusted request identity, a persistent
 repository and command governance. The compiler and demo entry are not part of
 this production entry. The memory server refuses staging and production.
+
+### Build Output Ownership
+
+New `minimal` and `command` starters keep backend bundles in
+`output/supacloud/`, separate from a Vite frontend's default `dist/`.
+Vite normally empties its output directory when rebuilding. Placing an App or
+Function bundle under that directory can delete it on a later frontend build;
+building the backend afterward can instead include server code in a public
+frontend archive. Build order and `emptyOutDir: false` are not isolation controls.
+
+Keep these outputs disjoint, including when customizing frontend paths:
+
+| Output | Default location | Owner |
+| --- | --- | --- |
+| Generated TypeScript/contracts | `generated/` | SupaCloud compiler |
+| Application factory bundle | `output/supacloud/application.js` | Starter `build` script |
+| Separately bundled Edge Functions | e.g. `output/supacloud/functions/<name>/index.js` | Application's explicit Function build |
+| Static frontend assets | e.g. `dist/` | Frontend build tool |
+
+This changes only newly initialized starter projects. Existing projects must
+update their build, host imports, deployment paths and ignore rules explicitly;
+the CLI does not rewrite existing files or infer arbitrary shell-script outputs.
+The compiler's `outDir` still controls generated sources and its delivery
+namespace, not the standalone Bun factory bundle. The starter output is ignored
+by Git; `generated/` remains committed for drift checks.
+
+### Persistent Adapters
 
 Replace the example's synchronous `ReviewStore` and command with a real async
 repository or transactional RPC. Lock the authoritative row or compare its
@@ -210,7 +258,7 @@ remain projections; see [Business State Machines](./business-state-machines.md).
 ## Acceptance Scenarios
 
 For the minimal path, run its colocated health test. For other business changes,
-`supacloud-cli app verify-plan --target <module>` reports individual nearby test
+`supacloud app verify-plan --target <module>` reports individual nearby test
 commands and manual gaps without running them or scanning the repository.
 The scenarios below concern the explicit command reference, not features
 implicitly installed into the minimal application.

@@ -104,11 +104,20 @@ export class FeatureModule {}`);
   test("context resolves owned symbols to the same existing module pack", () => {
     const expected = createContextPack(graph, "case");
     for (const target of [
-      "CaseModule", "CaseService", "CASE_SERVICE", "DrizzleCaseRepository",
+      "CaseModule", "CaseService", "CASE_SERVICE", "CaseRepository",
       "CaseController", "AcceptCaseCommand", "case.accept",
     ]) {
       expect(createContextPack(graph, target)).toEqual(expected);
     }
+  });
+
+  test("context files include the selected module feature specification source", () => {
+    const featureGraph = structuredClone(graph);
+    featureGraph.modules[0]!.featureSpec = {
+      name: "case", states: ["draft", "accepted"], transitions: [],
+      file: "case-feature.ts", line: 1,
+    };
+    expect(createContextPack(featureGraph, featureGraph.modules[0]!.name).files).toContain("case-feature.ts");
   });
 
   test("context resolves job and query names, classes and job service keys", () => {
@@ -187,6 +196,33 @@ export class FeatureModule {}`);
     expect(pack.files).toContain("src/features/case/case.module.ts");
     expect(pack.externalTokens).toContain("DB_CLIENT");
     expect(pack.relatedModules.imports).toEqual(["audit"]);
+    expect(pack.conventions).toMatchObject({
+      readTransport: "postgrest-supabase-js",
+      writeTransport: "command-rpc",
+      writeRetry: "disabled",
+      externalOutcome: "receipt-reconcile",
+      databaseSource: "zmodel-append-only",
+    });
+  });
+
+  test("context packs omit provider values and source expressions", () => {
+    const sourceModule = graph.modules.find((module) => module.name === "case")!;
+    const module = {
+      ...sourceModule,
+      providers: [{
+        ...sourceModule.providers[0]!,
+        useValueExpr: "process.env.SUPABASE_SERVICE_ROLE_KEY",
+        useFactoryName: "createSecretBackedAdapter",
+      }],
+      aspects: [{ name: "secretAspect", expression: "readSecret(process.env.KEY)", file: "src/secret.ts" }],
+    };
+    const pack = createContextPack({ ...graph, modules: graph.modules.map((item) => item.name === "case" ? module : item) }, "case");
+    expect(pack.modules.find((item) => item.name === "case")?.providers[0]).toMatchObject({
+      useValueExpr: "[omitted]",
+      useFactoryName: "[omitted]",
+    });
+    expect(pack.modules.find((item) => item.name === "case")?.aspects?.[0]?.expression).toBe("[omitted]");
+    expect(JSON.stringify(pack)).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
   });
 
   test("doctorProject 汇总生成物、模块和诊断状态", async () => {

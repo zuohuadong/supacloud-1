@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { DatabaseModule, QueryExecutor } from "@supacloud/db";
 import { executionMode } from "../execution-policy";
 import {
+    buildDatabaseAiContext,
     loadDatabaseModules,
     registerDbGovernanceTools,
     runModuleCheck,
@@ -130,7 +131,8 @@ const CASES_MODULE: DatabaseModule = {
         roles: ["authenticated"], source: "db/policies/cases_select.sql",
     }],
     functions: [{
-        name: "public.case_create", source: "db/functions/case_create.sql", security: "definer",
+        name: "public.case_create", source: "db/functions/case_create.sql",
+        security: "definer", transaction: "required",
     }],
     triggers: [],
     grants: [{ object: "public.cases", privilege: "select", role: "authenticated", source: "db/grants/cases.sql" }],
@@ -187,6 +189,27 @@ describe("db governance tools", () => {
             .rejects.toThrow("未找到数据库模块: nope");
     });
 
+    test("check reports offline checks and skips catalog when no database is selected", async () => {
+        const result = await db({ action: "check", root, module: "clean" });
+        expect(result.isError).toBe(false);
+        const report = JSON.parse(result.content[0].text);
+        expect(report).toMatchObject({ version: 1, scope: "database-check", ok: true });
+        expect(report.checks).toEqual([
+            expect.objectContaining({ name: "source-contract", skipped: true }),
+            expect.objectContaining({ name: "module-lint", ok: true, modules: ["clean"] }),
+            expect.objectContaining({ name: "catalog", skipped: true }),
+        ]);
+    });
+
+    test("check fails when module lint has an error", async () => {
+        const result = await db({ action: "check", root, module: "cases" });
+        expect(result.isError).toBe(true);
+        const report = JSON.parse(result.content[0].text);
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((entry: { name: string }) => entry.name === "module-lint"))
+            .toMatchObject({ ok: false });
+    });
+
     test("explain renders objects and flags unknown targets", async () => {
         const policy = await db({ action: "explain", root, target: "cases_select" });
         expect(policy.isError).toBe(false);
@@ -203,6 +226,38 @@ describe("db governance tools", () => {
         const missing = await db({ action: "explain", root, target: "public.nope" });
         expect(missing.isError).toBe(true);
         expect(missing.content[0].text).toContain("未找到对象");
+    });
+
+    test("context returns bounded object sources, tests and AI maintenance rules", async () => {
+        const context = buildDatabaseAiContext(
+            [CASES_MODULE],
+            root,
+            undefined,
+            "public.case_create",
+        );
+        expect(context.scope).toBe("database-ai-context");
+        expect(context.selectedModules).toEqual(["cases"]);
+        expect(context.objects).toHaveLength(1);
+        expect(context.objects[0]).toMatchObject({
+            kind: "function",
+            name: "public.case_create",
+            source: "db/functions/case_create.sql",
+            security: "definer",
+            transaction: "required",
+        });
+        expect(context.maintenance.structureSource).toBe("zmodel");
+        expect(context.maintenance.behaviorSource).toBe("sql");
+        expect(context.maintenance.protectedPaths).toContain("migrations/");
+        expect(context.verification).toContain("supacloud db module_check --module_file db/modules.ts --database_url \"$DATABASE_URL\"");
+    });
+
+    test("context action emits JSON and narrows to a module", async () => {
+        const result = await db({ action: "context", root, module: "clean" });
+        expect(result.isError).toBe(false);
+        const context = JSON.parse(result.content[0].text) as ReturnType<typeof buildDatabaseAiContext>;
+        expect(context.selectedModules).toEqual(["clean"]);
+        expect(context.objects.map((object) => object.name)).toEqual(["public.clean", "clean_select"]);
+        expect(executionMode("db", "context", {})).toBe("local");
     });
 
     test("runModuleCheck reconciles declared state against a mocked catalog", async () => {
@@ -293,9 +348,93 @@ describe("db governance tools", () => {
             .rejects.toThrow("supacloud-lite");
     });
 
+    test("module_check --remote sends normalized modules through the Management API", async () => {
+        const calls: Array<Record<string, unknown>> = [];
+        let callback: DbCallback | undefined;
+        registerDbGovernanceTools({
+            tool(_name, _description, _schema, registered) {
+                callback = registered as DbCallback;
+            },
+        }, {
+            environment: {},
+            projectRef: "project-ref",
+            apiUrl: "https://management.example.test",
+            runDatabase: () => async (args) => {
+                calls.push(args);
+                return {
+                    isError: false,
+                    content: [{ type: "text", text: "module: cases (ok)\n  no issues" }],
+                };
+            },
+        });
+        if (!callback) throw new Error("db tool was not registered");
+
+        const result = await callback({
+            action: "module_check",
+            root,
+            module_file: "db/modules.ts",
+            remote: true,
+            schema: "public,api",
+        });
+
+        expect(result.isError).toBe(false);
+        expect(result.content[0].text).toContain("module: cases");
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({
+            action: "governance_check",
+            ref: "project-ref",
+            schemas: ["public", "api"],
+        });
+        const modules = calls[0]?.["modules"] as Array<Record<string, unknown>>;
+        expect(modules.map((module) => module["name"])).toEqual(["cases", "clean"]);
+        expect(JSON.stringify(modules)).not.toContain("db/policies");
+        expect(modules[0]?.["functions"]).toEqual([
+            { name: "public.case_create", security: "definer" },
+        ]);
+    });
+
+    test("module_check --remote requires a Management API context", async () => {
+        await expect(db({ action: "module_check", root, remote: true }))
+            .rejects.toThrow("Management API context");
+    });
+
+    test("role_check --remote delegates to the project-scoped Management API", async () => {
+        const calls: Array<Record<string, unknown>> = [];
+        let callback: DbCallback | undefined;
+        registerDbGovernanceTools({
+            tool(_name, _description, _schema, registered) {
+                callback = registered as DbCallback;
+            },
+        }, {
+            environment: {},
+            projectRef: "project-ref",
+            apiUrl: "https://management.example.test",
+            runDatabase: () => async (args) => {
+                calls.push(args);
+                return {
+                    isError: false,
+                    content: [{ type: "text", text: JSON.stringify({ ok: true, state: { role: "app_user" } }) }],
+                };
+            },
+        });
+        if (!callback) throw new Error("db tool was not registered");
+
+        const result = await callback({ action: "role_check", remote: true, schema: "public,api" });
+
+        expect(result.isError).toBe(false);
+        expect(calls).toEqual([{ action: "role_check", ref: "project-ref", schemas: ["public", "api"] }]);
+    });
+
+    test("role_check --remote requires a Management API context", async () => {
+        await expect(db({ action: "role_check", root, remote: true }))
+            .rejects.toThrow("Management API context");
+    });
+
     test("db actions are classified in the execution policy", () => {
         expect(executionMode("db", "lint", {})).toBe("local");
         expect(executionMode("db", "explain", {})).toBe("local");
+        expect(executionMode("db", "check", {})).toBe("read");
         expect(executionMode("db", "module_check", {})).toBe("read");
+        expect(executionMode("db", "role_check", {})).toBe("read");
     });
 });

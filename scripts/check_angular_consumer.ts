@@ -54,7 +54,7 @@ try {
   await writeFile(join(project, "package.json"), JSON.stringify({
     name: "angular-consumer", private: true, type: "module",
     dependencies: { ...overrides, "@angular/core": angularVersion, rxjs: app.dependencies.rxjs },
-  devDependencies: { typescript: app.devDependencies.typescript, "@types/node": app.devDependencies["@types/node"], "@types/bun": "^1.4.2" },
+  devDependencies: { typescript: app.devDependencies.typescript, "@types/node": app.devDependencies["@types/node"], "@types/bun": "^1.4.4" },
     overrides,
   }, null, 2));
   await writeFile(join(project, "tsconfig.json"), JSON.stringify({
@@ -105,15 +105,15 @@ console.log("Packed diagnostic report and editor adapter share the compiler payl
     const installed = JSON.parse(await readFile(join(project, "node_modules", name, "package.json"), "utf8"));
     console.log(`Tested packed consumer dependency: ${name}@${installed.version}`);
   }
-  console.log(await run(["node_modules/typescript/bin/tsc", "--project", "tsconfig.json", "--pretty", "false"]));
+  console.log(await run(["check", "--no-script", "--project", "tsconfig.json", "--pretty", "false"]));
   console.log(await run(["consumer.ts"]));
   // A separate process prevents production mode leaking into other tests.
   console.log(await run(["consumer.ts", "--production"]));
   console.log(await run(["bundle.mjs"]));
-  console.log(await run(["node_modules/typescript/bin/tsc", "--project", "tsconfig.http.json", "--pretty", "false"]));
+  console.log(await run(["check", "--no-script", "--project", "tsconfig.http.json", "--pretty", "false"]));
   console.log(await run(["consumer-http.ts"]));
   console.log(await run(["consumer-diagnostics.ts"]));
-  console.log(await run(["node_modules/typescript/bin/tsc", "--project", "tsconfig.host.json", "--pretty", "false"]));
+  console.log(await run(["check", "--no-script", "--project", "tsconfig.host.json", "--pretty", "false"]));
   console.log(await run(["consumer-host.ts"]));
 } finally {
   process.removeListener("SIGINT", interrupt);

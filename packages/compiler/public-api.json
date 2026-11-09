@@ -6,7 +6,7 @@
     {
       "name": "analyzeProject",
       "kind": "value",
-      "signature": "export declare function analyzeProject(rootDir: string, include?: string[], cache?: DependencyGraphCache, changedPaths?: string[]): Promise<ApplicationGraph>;"
+      "signature": "export declare function analyzeProject(rootDir: string, include?: string[], cache?: DependencyGraphCache, changedPaths?: string[], effectOptions?: EffectCompilerOptions): Promise<ApplicationGraph>;"
     },
     {
       "name": "ANGULAR_ENTERPRISE_RULES",
@@ -81,7 +81,7 @@
     {
       "name": "ApplicationDevelopmentRoute",
       "kind": "type",
-      "signature": "export interface ApplicationDevelopmentRoute {\n    module: string;\n    method: string;\n    path: string;\n    controller: string;\n    handler: string;\n    command?: string;\n    aspects: string[];\n    schemaKinds?: Record<string, DevelopmentSchemaKind>;\n}"
+      "signature": "export interface ApplicationDevelopmentRoute {\n    module: string;\n    method: string;\n    path: string;\n    controller: string;\n    handler: string;\n    command?: string;\n    idempotency?: \"required\" | \"none\";\n    aspects: string[];\n    schemaKinds?: Record<string, DevelopmentSchemaKind>;\n}"
     },
     {
       "name": "ApplicationGraph",
@@ -134,6 +134,11 @@
       "signature": "export declare function camelName(token: string): string;"
     },
     {
+      "name": "checkGraphqlCompatibility",
+      "kind": "value",
+      "signature": "export declare function checkGraphqlCompatibility(schema: GraphQLSchema, documents: readonly {\n    source: string;\n    path?: string;\n}[], policy?: GraphqlGovernancePolicy): Omit<GraphqlCompatibilityReport, \"schema\">;"
+    },
+    {
       "name": "checkProject",
       "kind": "value",
       "signature": "export declare function checkProject(options: CompileOptions): Promise<CheckProjectResult>;"
@@ -151,17 +156,17 @@
     {
       "name": "CommandExecutionCapabilities",
       "kind": "type",
-      "signature": "export interface CommandExecutionCapabilities {\n    requirePersistentAdapters?: boolean;\n    rpc?: Record<string, {\n        audit?: boolean;\n        idempotency?: boolean;\n        transaction?: boolean;\n        boundary?: \"database\" | \"external\";\n    }>;\n    permission?: boolean;\n    audit?: boolean;\n    idempotency?: boolean;\n    transaction?: boolean | \"rpc-only\";\n}"
+      "signature": "export interface CommandExecutionCapabilities {\n    requirePersistentAdapters?: boolean;\n    rpc?: Record<string, {\n        audit?: boolean;\n        idempotency?: boolean;\n        reconcile?: boolean;\n        transaction?: boolean;\n        boundary?: \"database\" | \"external\";\n    }>;\n    permission?: boolean;\n    audit?: boolean;\n    idempotency?: boolean;\n    transaction?: boolean | \"rpc-only\";\n}"
     },
     {
       "name": "CommandNode",
       "kind": "type",
-      "signature": "export interface CommandNode {\n    rpc?: string;\n    className: string;\n    name: string;\n    permission?: string;\n    transaction: \"required\" | \"none\";\n    audit?: string;\n    idempotency: \"required\" | \"none\";\n    standalone?: boolean;\n    uses?: InfraResourceUseRef[];\n    aspects?: AspectRefNode[];\n}"
+      "signature": "export interface CommandNode {\n    rpc?: string;\n    branches?: CommandBranchNode[];\n    className: string;\n    name: string;\n    permission?: string;\n    transaction: \"required\" | \"none\";\n    audit?: string;\n    idempotency: \"required\" | \"none\";\n    tenantScope?: \"required\" | \"none\";\n    standalone?: boolean;\n    uses?: InfraResourceUseRef[];\n    aspects?: AspectRefNode[];\n}"
     },
     {
       "name": "CompileOptions",
       "kind": "type",
-      "signature": "export interface CompileOptions {\n    graphql?: GraphqlOptions;\n    requireRouteContracts?: boolean;\n    rootDir: string;\n    include?: string[];\n    outDir: string;\n    strict?: boolean;\n    moduleBoundaryPreset?: ModuleBoundaryPresetName;\n    moduleBoundaries?: ModuleBoundaryRule[];\n    allowRouteCommandBindings?: boolean;\n    commandCapabilities?: CommandExecutionCapabilities;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n    writeOnError?: boolean;\n    generateClient?: boolean;\n    generateOpenApi?: boolean;\n    openApi?: OpenApiOptions;\n    generatePermissions?: boolean;\n    treeShakeUnusedProviders?: boolean;\n    cache?: DependencyGraphCache;\n    changedPaths?: string[];\n    typeSafety?: TypeSafetyOptions;\n}"
+      "signature": "export interface CompileOptions {\n    databaseGovernance?: DatabaseGovernanceOptions;\n    graphql?: GraphqlOptions;\n    requireRouteContracts?: boolean;\n    rootDir: string;\n    include?: string[];\n    outDir: string;\n    strict?: boolean;\n    moduleBoundaryPreset?: ModuleBoundaryPresetName;\n    moduleBoundaries?: ModuleBoundaryRule[];\n    allowRouteCommandBindings?: boolean;\n    commandCapabilities?: CommandExecutionCapabilities;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n    writeOnError?: boolean;\n    generateClient?: boolean;\n    generateOpenApi?: boolean;\n    openApi?: OpenApiOptions;\n    generatePermissions?: boolean;\n    treeShakeUnusedProviders?: boolean;\n    cache?: DependencyGraphCache;\n    changedPaths?: string[];\n    typeSafety?: TypeSafetyOptions;\n    effect?: EffectCompilerOptions;\n}"
     },
     {
       "name": "compileOptionsFromConfig",
@@ -196,12 +201,12 @@
     {
       "name": "ContextPack",
       "kind": "type",
-      "signature": "export interface ContextPack {\n    version: 1;\n    subject: string;\n    modules: ModuleNode[];\n    files: string[];\n    externalTokens: string[];\n    executionPlans: ExecutionPlan[];\n    routeContracts: ReturnType<typeof inspectRouteContracts>;\n    diagnostics: Diagnostic[];\n    conventions: {\n        singleResult: \"async-await\";\n        eventComposition: \"rxjs\";\n        angularHost: \"@supacloud/app/angular\";\n        cancellation: \"explicit-owner-signal\";\n    };\n    relatedModules: {\n        importedBy: string[];\n        imports: string[];\n    };\n    graphql?: ApplicationGraph[\"graphql\"];\n}"
+      "signature": "export interface ContextPack {\n    version: 1;\n    subject: string;\n    modules: ModuleNode[];\n    files: string[];\n    externalTokens: string[];\n    executionPlans: ExecutionPlan[];\n    routeContracts: ReturnType<typeof inspectRouteContracts>;\n    diagnostics: Diagnostic[];\n    conventions: {\n        singleResult: \"async-await\";\n        eventComposition: \"rxjs\";\n        angularHost: \"@supacloud/app/angular\";\n        cancellation: \"explicit-owner-signal\";\n        readTransport: \"postgrest-supabase-js\";\n        writeTransport: \"command-rpc\";\n        writeRetry: \"disabled\";\n        externalOutcome: \"receipt-reconcile\";\n        databaseSource: \"zmodel-append-only\";\n    };\n    relatedModules: {\n        importedBy: string[];\n        imports: string[];\n    };\n    graphql?: ApplicationGraph[\"graphql\"];\n}"
     },
     {
       "name": "ContractManifest",
       "kind": "type",
-      "signature": "export interface ContractManifest {\n    version: 1;\n    commands: Array<{\n        name: string;\n        className: string;\n        module: string;\n        permission?: string;\n        rpc?: string;\n        transaction: \"required\" | \"none\";\n        idempotency: \"required\" | \"none\";\n        auditEvent?: string;\n    }>;\n    queries: Array<{\n        name: string;\n        className: string;\n        module: string;\n    }>;\n    routes: Array<{\n        method: string;\n        path: string;\n        module: string;\n        controller: string;\n        handler: string;\n        command?: string;\n        permission?: string;\n        requestSchemas: Partial<Record<\"body\" | \"params\" | \"query\" | \"headers\" | \"cookie\", string>>;\n        responseSchema?: string;\n        responseSchemas?: Record<string, string>;\n        evidence?: string;\n        parse?: \"none\";\n        allowDeleteBody?: true;\n    }>;\n    permissions: string[];\n    rpc: Array<{\n        command: string;\n        adapter: string;\n    }>;\n    events: Array<{\n        name: string;\n        source: string;\n        command: string;\n    }>;\n    fixtures: string[];\n    artifacts: {\n        client: boolean;\n        openapi: boolean;\n        permissions: boolean;\n        sdk: \"generated-client\";\n        openapiDocument: \"generated\";\n        permissionManifest: \"generated\";\n    };\n}"
+      "signature": "export interface ContractManifest {\n    version: 1;\n    commands: Array<{\n        name: string;\n        className: string;\n        module: string;\n        permission?: string;\n        rpc?: string;\n        branches?: Array<{\n            when: string;\n            adapter: string;\n            transaction: \"required\" | \"none\";\n            idempotency: \"required\" | \"none\";\n            auditEvent?: string;\n            boundary?: \"database\" | \"external\";\n        }>;\n        transaction: \"required\" | \"none\";\n        idempotency: \"required\" | \"none\";\n        tenantScope?: \"required\" | \"none\";\n        auditEvent?: string;\n    }>;\n    queries: Array<{\n        name: string;\n        className: string;\n        module: string;\n        permission?: string;\n        tenantScope?: \"required\" | \"none\";\n    }>;\n    jobs: Array<{\n        name: string;\n        className: string;\n        module: string;\n        input?: string;\n        inputKind?: \"opaque\" | \"declared\";\n        output?: string;\n        outputKind?: \"opaque\" | \"declared\";\n        mode?: \"task\" | \"workflow\";\n        idempotency?: \"required\" | \"none\";\n        tenantScope?: \"required\" | \"none\";\n    }>;\n    features: Array<{\n        name: string;\n        states: string[];\n        database?: FeatureDatabaseSourceNode;\n        tenantField?: string;\n        transitions: Array<{\n            name: string;\n            from: string;\n            to: string;\n            permission?: string;\n            command?: string;\n            route?: string;\n            routeBinding?: \"command\" | \"controller\";\n            transaction?: \"required\" | \"none\";\n            idempotency?: \"required\" | \"none\";\n            audit?: string;\n            job?: string;\n            invalidateTags?: string[];\n            jobDetails?: {\n                name: string;\n                className: string;\n                input?: string;\n                inputKind?: \"opaque\" | \"declared\";\n                output?: string;\n                outputKind?: \"opaque\" | \"declared\";\n                mode?: \"task\" | \"workflow\";\n                idempotency?: \"required\" | \"none\";\n                tenantScope?: \"required\" | \"none\";\n            };\n            persistence?: FeaturePersistenceNode;\n        }>;\n    }>;\n    routes: Array<{\n        method: string;\n        path: string;\n        module: string;\n        controller: string;\n        handler: string;\n        command?: string;\n        permission?: string;\n        idempotency?: \"required\" | \"none\";\n        tags?: string[];\n        requestSchemas: Partial<Record<\"body\" | \"params\" | \"query\" | \"headers\" | \"cookie\", string>>;\n        responseSchema?: string;\n        responseSchemas?: Record<string, string>;\n        evidence?: string;\n        parse?: \"none\";\n        allowDeleteBody?: true;\n    }>;\n    permissions: string[];\n    rpc: Array<{\n        command: string;\n        adapter: string;\n    }>;\n    events: Array<{\n        name: string;\n        source: string;\n        command: string;\n    }>;\n    fixtures: string[];\n    artifacts: {\n        client: boolean;\n        openapi: boolean;\n        permissions: boolean;\n        sdk: \"generated-client\";\n        openapiDocument: \"generated\";\n        permissionManifest: \"generated\";\n    };\n}"
     },
     {
       "name": "ControllerNode",
@@ -221,7 +226,7 @@
     {
       "name": "createDeliveryPlan",
       "kind": "value",
-      "signature": "export declare function createDeliveryPlan(graph: ApplicationGraph, input?: unknown): DeliveryPlanResult;"
+      "signature": "export declare function createDeliveryPlan(graph: ApplicationGraph, input?: unknown, validation?: ValidateOptions): DeliveryPlanResult;"
     },
     {
       "name": "createDependencyGraphCache",
@@ -259,14 +264,29 @@
       "signature": "export declare function createReleaseEvidence(manifestPath: string, target: string): Promise<ReleaseEvidence>;"
     },
     {
+      "name": "createRoleSnapshotReport",
+      "kind": "value",
+      "signature": "export declare function createRoleSnapshotReport(roles: readonly {\n    role: string;\n    path: string;\n    source: string;\n}[]): GraphqlRoleSnapshotReport;"
+    },
+    {
+      "name": "DatabaseContractManifest",
+      "kind": "type",
+      "signature": "export interface DatabaseContractManifest {\n    readonly version: 1;\n    readonly role: string;\n    readonly fingerprint: string;\n    readonly inputs: Readonly<Record<string, string>>;\n    readonly migrationOrder: readonly string[];\n    readonly outputs: Readonly<Record<string, string>>;\n}"
+    },
+    {
       "name": "DatabaseContractsOptions",
       "kind": "type",
-      "signature": "export interface DatabaseContractsOptions {\n    rootDir: string;\n    outDir: string;\n    postgrestTypes?: string;\n    drizzleSchema?: string;\n    role: string;\n    graphql?: GraphqlOptions;\n    migrations: readonly string[];\n}"
+      "signature": "export interface DatabaseContractsOptions {\n    rootDir: string;\n    outDir: string;\n    postgrestTypes?: string;\n    modelSchema?: string;\n    role: string;\n    graphql?: GraphqlOptions;\n    migrations: readonly string[];\n}"
+    },
+    {
+      "name": "DatabaseGovernanceOptions",
+      "kind": "type",
+      "signature": "export interface DatabaseGovernanceOptions {\n    mode: \"off\" | \"check\" | \"enforce\";\n    projectRoot?: string;\n    moduleFile?: string;\n    databaseUrl?: string;\n    databaseUrlEnv?: string;\n    schemas?: string[];\n}"
     },
     {
       "name": "DEFAULT_SUPACLOUD_CONFIG",
       "kind": "value",
-      "signature": "export declare const DEFAULT_SUPACLOUD_CONFIG: Required<Omit<SupaCloudConfig, \"include\" | \"moduleBoundaryPreset\" | \"moduleBoundaries\" | \"typeSafety\" | \"delivery\" | \"allowRouteCommandBindings\" | \"disallowControllerDirectDb\" | \"detectOrphanModules\" | \"openApi\">> & {\n    include: string[];\n    moduleBoundaryPreset: ModuleBoundaryPresetName;\n};"
+      "signature": "export declare const DEFAULT_SUPACLOUD_CONFIG: Required<Omit<SupaCloudConfig, \"include\" | \"moduleBoundaryPreset\" | \"moduleBoundaries\" | \"typeSafety\" | \"delivery\" | \"allowRouteCommandBindings\" | \"openApi\" | \"effect\">> & {\n    include: string[];\n    moduleBoundaryPreset: ModuleBoundaryPresetName;\n    effect: NonNullable<CompileOptions[\"effect\"]>;\n};"
     },
     {
       "name": "defineSupacloudConfig",
@@ -399,6 +419,11 @@
       "signature": "export interface DiagnosticRepair {\n    code: string;\n    errorCode?: string;\n    file?: string;\n    line?: number;\n    type: DiagnosticFix[\"type\"];\n    targetFile: string;\n    fix: DiagnosticFix;\n    readiness: \"preview\" | \"input-required\" | \"manual\";\n    reason: string;\n}"
     },
     {
+      "name": "diffGraphqlSchemas",
+      "kind": "value",
+      "signature": "export declare function diffGraphqlSchemas(previous: GraphQLSchema, current: GraphQLSchema): GraphqlSchemaDiff;"
+    },
+    {
       "name": "diffOpenApiDocuments",
       "kind": "value",
       "signature": "export declare function diffOpenApiDocuments(baseValue: unknown, currentValue: unknown): OpenApiDiffResult;"
@@ -412,6 +437,26 @@
       "name": "DoctorResult",
       "kind": "type",
       "signature": "export interface DoctorResult {\n    checks: Array<{\n        name: string;\n        ok: boolean;\n        detail: string;\n    }>;\n    diagnostics: ApplicationGraph[\"diagnostics\"];\n    errors: number;\n}"
+    },
+    {
+      "name": "EffectCompilerOptions",
+      "kind": "type",
+      "signature": "export interface EffectCompilerOptions {\n    requireRouteEffects?: boolean;\n    requireErrorMappings?: boolean;\n    requireDependencies?: boolean;\n    requireTaggedErrorTypes?: boolean;\n    requireExactDependencyTypes?: boolean;\n    requireTimeoutForDependencies?: boolean;\n    forbidDirectRuntimeExecution?: boolean;\n    forbidDirectThrows?: boolean;\n    requireRetryPolicy?: boolean;\n    defaultRetry?: \"none\";\n}"
+    },
+    {
+      "name": "EffectErrorMappingNode",
+      "kind": "type",
+      "signature": "export interface EffectErrorMappingNode {\n    tag: string;\n    status: number;\n    code: string;\n    message?: string;\n    codeFromError?: boolean;\n    messageFromError?: boolean;\n    statusFromError?: boolean;\n    retryable?: boolean;\n    outcomeUnknown?: boolean;\n}"
+    },
+    {
+      "name": "EffectRetryPolicy",
+      "kind": "type",
+      "signature": "export type EffectRetryPolicy = \"none\" | \"explicit\";"
+    },
+    {
+      "name": "EffectRouteNode",
+      "kind": "type",
+      "signature": "export interface EffectRouteNode {\n    required: true;\n    errors?: EffectErrorMappingNode[];\n    dependencies?: string[];\n    retry?: EffectRetryPolicy;\n    maxAttempts?: number;\n    timeoutMs?: number;\n}"
     },
     {
       "name": "ENVIRONMENT_BINDING_REFERENCE_PATTERN",
@@ -529,14 +574,24 @@
       "signature": "export declare function exportGraphMermaid(graph: ApplicationGraph): string;"
     },
     {
+      "name": "FeatureDatabaseSourceNode",
+      "kind": "type",
+      "signature": "export interface FeatureDatabaseSourceNode {\n    source: string;\n    table: string;\n    rowType: string;\n}"
+    },
+    {
+      "name": "FeaturePersistenceNode",
+      "kind": "type",
+      "signature": "export interface FeaturePersistenceNode {\n    boundary: \"database\" | \"external\";\n    optimisticLock: \"required\" | \"none\";\n    versionField?: string;\n    tenantField?: string;\n    stateField?: string;\n    receipt: \"required\" | \"none\";\n    reconciliation: \"required\" | \"none\";\n}"
+    },
+    {
       "name": "FeatureSpecNode",
       "kind": "type",
-      "signature": "export interface FeatureSpecNode {\n    name: string;\n    states: string[];\n    transitions: FeatureTransitionNode[];\n    file?: string;\n    line?: number;\n}"
+      "signature": "export interface FeatureSpecNode {\n    name: string;\n    states: string[];\n    database?: FeatureDatabaseSourceNode;\n    tenantField?: string;\n    readPermission?: string;\n    requiredAdapters?: string[];\n    requiredAdapterScopes?: Record<string, Scope>;\n    transitions: FeatureTransitionNode[];\n    file?: string;\n    line?: number;\n}"
     },
     {
       "name": "FeatureTransitionNode",
       "kind": "type",
-      "signature": "export interface FeatureTransitionNode {\n    name: string;\n    from: string;\n    to: string;\n    permission?: string;\n    command?: string;\n    route?: string;\n    transaction?: \"required\" | \"none\";\n    idempotency?: \"required\" | \"none\";\n    audit?: string;\n}"
+      "signature": "export interface FeatureTransitionNode {\n    name: string;\n    from: string;\n    to: string;\n    permission?: string;\n    command?: string;\n    route?: string;\n    routeBinding?: \"command\" | \"controller\";\n    transaction?: \"required\" | \"none\";\n    idempotency?: \"required\" | \"none\";\n    audit?: string;\n    job?: string;\n    invalidateTags?: string[];\n    persistence?: FeaturePersistenceNode;\n}"
     },
     {
       "name": "formatApplicationDevelopmentContext",
@@ -609,14 +664,64 @@
       "signature": "export declare function getModuleBoundaryProfile(name: ModuleBoundaryPresetName): ModuleBoundaryProfile;"
     },
     {
+      "name": "GraphqlCompatibilityReport",
+      "kind": "type",
+      "signature": "export interface GraphqlCompatibilityReport {\n    ok: boolean;\n    schema: {\n        path: string;\n        schemaHash: string;\n        schemaNormalizedHash: string;\n    };\n    features: GraphqlFeatureMatrix;\n    operations: GraphqlOperationReport[];\n    diagnostics: GraphqlGovernanceDiagnostic[];\n}"
+    },
+    {
       "name": "GraphqlContractSummary",
       "kind": "type",
-      "signature": "export interface GraphqlContractSummary {\n    schema: string;\n    schemaHash?: string;\n    schemaNormalizedHash?: string;\n    documents: string[];\n    operations: Array<{\n        name: string;\n        file: string;\n        line: number;\n    }>;\n}"
+      "signature": "export interface GraphqlContractSummary {\n    schema: string;\n    schemaHash?: string;\n    schemaNormalizedHash?: string;\n    mode?: \"query-only\" | \"query-mutation\";\n    documents: string[];\n    operations: Array<{\n        name: string;\n        file: string;\n        line: number;\n    }>;\n}"
+    },
+    {
+      "name": "graphqlFeatureMatrix",
+      "kind": "value",
+      "signature": "export declare function graphqlFeatureMatrix(schema: GraphQLSchema): GraphqlFeatureMatrix;"
+    },
+    {
+      "name": "GraphqlFeatureMatrix",
+      "kind": "type",
+      "signature": "export interface GraphqlFeatureMatrix {\n    pgGraphql: \"schema-snapshot\";\n    query: boolean;\n    mutation: boolean;\n    subscription: boolean;\n    relayConnections: boolean;\n    filtering: boolean;\n    ordering: boolean;\n    aggregation: boolean;\n    byPk: boolean;\n    functions: boolean;\n}"
+    },
+    {
+      "name": "GraphqlGovernanceDiagnostic",
+      "kind": "type",
+      "signature": "export interface GraphqlGovernanceDiagnostic {\n    severity: GraphqlSeverity;\n    code: string;\n    message: string;\n    file?: string;\n    line?: number;\n    operation?: string;\n}"
+    },
+    {
+      "name": "GraphqlGovernancePolicy",
+      "kind": "type",
+      "signature": "export interface GraphqlGovernancePolicy {\n    operations?: string[];\n    maxDepth?: number;\n    maxFields?: number;\n    maxComplexity?: number;\n    maxPageSize?: number;\n}"
+    },
+    {
+      "name": "GraphqlOperationReport",
+      "kind": "type",
+      "signature": "export interface GraphqlOperationReport {\n    name: string;\n    operation: \"query\" | \"mutation\" | \"subscription\";\n    depth: number;\n    fields: number;\n    complexity: number;\n    pageSizes: number[];\n    allowed: boolean;\n}"
     },
     {
       "name": "GraphqlOptions",
       "kind": "type",
-      "signature": "export interface GraphqlOptions {\n    typedDocuments?: boolean;\n    schema: string;\n    documents?: string[];\n    scalars?: Record<string, string | {\n        input: string;\n        output: string;\n    }>;\n}"
+      "signature": "export interface GraphqlOptions {\n    typedDocuments?: boolean;\n    mutations?: boolean;\n    schema: string;\n    documents?: string[];\n    scalars?: Record<string, string | {\n        input: string;\n        output: string;\n    }>;\n}"
+    },
+    {
+      "name": "GraphqlRoleSnapshot",
+      "kind": "type",
+      "signature": "export interface GraphqlRoleSnapshot {\n    role: string;\n    schema: string;\n    schemaHash: string;\n    schemaNormalizedHash: string;\n}"
+    },
+    {
+      "name": "GraphqlRoleSnapshotReport",
+      "kind": "type",
+      "signature": "export interface GraphqlRoleSnapshotReport {\n    ok: boolean;\n    roles: GraphqlRoleSnapshot[];\n    diagnostics: GraphqlGovernanceDiagnostic[];\n}"
+    },
+    {
+      "name": "GraphqlSchemaChange",
+      "kind": "type",
+      "signature": "export interface GraphqlSchemaChange {\n    severity: \"breaking\" | \"non-breaking\";\n    code: string;\n    message: string;\n    path: string;\n}"
+    },
+    {
+      "name": "GraphqlSchemaDiff",
+      "kind": "type",
+      "signature": "export interface GraphqlSchemaDiff {\n    ok: boolean;\n    breaking: GraphqlSchemaChange[];\n    nonBreaking: GraphqlSchemaChange[];\n}"
     },
     {
       "name": "IncrementalProgramSession",
@@ -629,9 +734,14 @@
       "signature": "export declare function inspectRouteContracts(graph: ApplicationGraph): any;"
     },
     {
+      "name": "introspectionQuery",
+      "kind": "value",
+      "signature": "export declare function introspectionQuery(): string;"
+    },
+    {
       "name": "JobNode",
       "kind": "type",
-      "signature": "export interface JobNode {\n    className: string;\n    name: string;\n    serviceKey: string;\n    scope: Scope;\n    input?: string;\n    output?: string;\n    schemaKinds?: Partial<Record<\"input\" | \"output\", JobSchemaKind>>;\n    schemaImports?: Record<string, string>;\n    mode?: JobMode;\n    timeoutSec?: number;\n    maxAttempts?: number;\n    idempotency?: JobIdempotency;\n    uses?: InfraResourceUseRef[];\n    aspects?: AspectRefNode[];\n}"
+      "signature": "export interface JobNode {\n    className: string;\n    name: string;\n    serviceKey: string;\n    scope: Scope;\n    input?: string;\n    output?: string;\n    schemaKinds?: Partial<Record<\"input\" | \"output\", JobSchemaKind>>;\n    schemaImports?: Record<string, string>;\n    mode?: JobMode;\n    timeoutSec?: number;\n    maxAttempts?: number;\n    idempotency?: JobIdempotency;\n    tenantScope?: \"required\" | \"none\";\n    uses?: InfraResourceUseRef[];\n    aspects?: AspectRefNode[];\n}"
     },
     {
       "name": "loadGeneratedOpenApiDocument",
@@ -681,7 +791,7 @@
     {
       "name": "MigrationAssessmentResult",
       "kind": "type",
-      "signature": "export interface MigrationAssessmentResult {\n    version: 1;\n    ok: boolean;\n    status: MigrationAssessmentStatus;\n    readOnly: true;\n    writesPerformed: false;\n    rendering: {\n        selected: MigrationRenderMode;\n        ssrRequired: false;\n        supportedModes: readonly [\"browser\", \"ssr\", \"edge\", \"trusted-server\"];\n        guidance: string;\n    };\n    dependencies: {\n        expected: Readonly<Record<string, string>>;\n        problems: string[];\n    };\n    compiler: {\n        upToDate: boolean;\n        diagnostics: Diagnostic[];\n        mismatches: string[];\n    };\n    artifacts: {\n        contractsManifest: {\n            path: string;\n            present: boolean;\n            sha256?: string;\n            version?: number;\n            commands?: number;\n            routes?: number;\n            permissions?: number;\n        };\n        openApi?: {\n            baselinePath: string;\n            baselineSha256: string;\n            currentPath: string;\n            currentSha256: string;\n            diff: OpenApiDiffResult;\n        };\n    };\n    findings: MigrationAssessmentFinding[];\n}"
+      "signature": "export interface MigrationAssessmentResult {\n    version: 1;\n    ok: boolean;\n    status: MigrationAssessmentStatus;\n    readOnly: true;\n    writesPerformed: false;\n    rendering: {\n        selected: MigrationRenderMode;\n        ssrRequired: false;\n        supportedModes: readonly [\"browser\", \"ssr\", \"edge\", \"trusted-server\"];\n        guidance: string;\n    };\n    dependencies: {\n        expected: Readonly<Record<string, string>>;\n        problems: string[];\n    };\n    compiler: {\n        upToDate: boolean;\n        diagnostics: Diagnostic[];\n        mismatches: string[];\n    };\n    artifacts: {\n        contractsManifest: {\n            path: string;\n            present: boolean;\n            sha256?: string;\n            version?: number;\n            commands?: number;\n            jobs?: number;\n            routes?: number;\n            permissions?: number;\n            features?: number;\n        };\n        openApi?: {\n            baselinePath: string;\n            baselineSha256: string;\n            currentPath: string;\n            currentSha256: string;\n            diff: OpenApiDiffResult;\n        };\n    };\n    findings: MigrationAssessmentFinding[];\n}"
     },
     {
       "name": "MigrationAssessmentStatus",
@@ -766,7 +876,7 @@
     {
       "name": "OpenApiOptions",
       "kind": "type",
-      "signature": "export interface OpenApiOptions {\n    title?: string;\n    version?: string;\n    description?: string;\n    servers?: OpenApiServer[];\n    securitySchemes?: Record<string, OpenApiSecurityScheme>;\n}"
+      "signature": "export interface OpenApiOptions {\n    snapshots?: boolean;\n    title?: string;\n    version?: string;\n    description?: string;\n    servers?: OpenApiServer[];\n    securitySchemes?: Record<string, OpenApiSecurityScheme>;\n}"
     },
     {
       "name": "OpenApiSecurityScheme",
@@ -782,6 +892,11 @@
       "name": "parseApplicationDevelopmentContext",
       "kind": "value",
       "signature": "export declare function parseApplicationDevelopmentContext(input: unknown): ApplicationDevelopmentContext;"
+    },
+    {
+      "name": "parseDatabaseContractManifest",
+      "kind": "value",
+      "signature": "export declare function parseDatabaseContractManifest(value: unknown): DatabaseContractManifest;"
     },
     {
       "name": "parseDatabaseContractsOptions",
@@ -851,7 +966,7 @@
     {
       "name": "QueryNode",
       "kind": "type",
-      "signature": "export interface QueryNode {\n    className: string;\n    name: string;\n}"
+      "signature": "export interface QueryNode {\n    className: string;\n    name: string;\n    permission?: string;\n    tenantScope?: \"required\" | \"none\";\n}"
     },
     {
       "name": "readApplicationDevelopmentContext",
@@ -867,6 +982,11 @@
       "name": "readExecutionMetadata",
       "kind": "value",
       "signature": "export declare function readExecutionMetadata(path: string): Promise<unknown>;"
+    },
+    {
+      "name": "readGraphqlSchema",
+      "kind": "value",
+      "signature": "export declare function readGraphqlSchema(path: string): Promise<{\n    path: string;\n    source: string;\n    schema: GraphQLSchema;\n    schemaHash: string;\n    schemaNormalizedHash: string;\n}>;"
     },
     {
       "name": "readOpenApiJson",
@@ -931,12 +1051,12 @@
     {
       "name": "resolveSupacloudConfig",
       "kind": "value",
-      "signature": "export declare function resolveSupacloudConfig(config?: SupaCloudConfig, cwd?: any): {\n    rootDir: string;\n    outDir: string;\n    include: string[];\n    strict: boolean;\n    requireRouteContracts: boolean;\n    generateClient: boolean;\n    generateOpenApi: boolean;\n    openApi?: NonNullable<CompileOptions[\"openApi\"]>;\n    generatePermissions: boolean;\n    moduleBoundaryPreset: ModuleBoundaryPresetName;\n    commandCapabilities?: CommandExecutionCapabilities;\n    moduleBoundaries?: NonNullable<CompileOptions[\"moduleBoundaries\"]>;\n    typeSafety?: NonNullable<CompileOptions[\"typeSafety\"]>;\n    allowRouteCommandBindings?: boolean;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n    treeShakeUnusedProviders: boolean;\n    graphql?: GraphqlOptions;\n};"
+      "signature": "export declare function resolveSupacloudConfig(config?: SupaCloudConfig, cwd?: any): {\n    rootDir: string;\n    outDir: string;\n    include: string[];\n    strict: boolean;\n    requireRouteContracts: boolean;\n    generateClient: boolean;\n    generateOpenApi: boolean;\n    openApi?: NonNullable<CompileOptions[\"openApi\"]>;\n    generatePermissions: boolean;\n    moduleBoundaryPreset: ModuleBoundaryPresetName;\n    commandCapabilities?: CommandExecutionCapabilities;\n    moduleBoundaries?: NonNullable<CompileOptions[\"moduleBoundaries\"]>;\n    typeSafety?: NonNullable<CompileOptions[\"typeSafety\"]>;\n    databaseGovernance?: NonNullable<CompileOptions[\"databaseGovernance\"]>;\n    allowRouteCommandBindings?: boolean;\n    disallowControllerDirectDb: boolean;\n    detectOrphanModules: boolean;\n    effect?: NonNullable<CompileOptions[\"effect\"]>;\n    treeShakeUnusedProviders: boolean;\n    graphql?: GraphqlOptions;\n};"
     },
     {
       "name": "RouteNode",
       "kind": "type",
-      "signature": "export interface RouteNode {\n    parse?: \"none\";\n    allowDeleteBody?: true;\n    contract?: {\n        body?: \"framework\" | \"domain\";\n        response?: \"framework\" | \"native-json\" | \"binary\" | \"stream\";\n        evidence?: string;\n    };\n    schemaKinds?: Partial<Record<\"body\" | \"params\" | \"query\" | \"headers\" | \"cookie\" | \"response\", \"opaque\" | \"declared\">>;\n    nativeResponse?: boolean;\n    method: \"GET\" | \"POST\" | \"PUT\" | \"PATCH\" | \"DELETE\" | \"HEAD\" | \"OPTIONS\";\n    path: string;\n    handler: string;\n    body?: string;\n    params?: string;\n    query?: string;\n    headers?: string;\n    cookie?: string;\n    response?: string;\n    responses?: Record<string, string>;\n    command?: string;\n    guards?: string[];\n    canMatch?: string[];\n    canDeactivate?: string[];\n    resolvers?: Record<string, string>;\n    redirectTo?: string;\n    pathMatch?: \"full\" | \"prefix\";\n    pathParams?: string[];\n    paramBindings?: string[];\n    queryBindings?: string[];\n    hasBodyBinding?: boolean;\n    paramTransforms?: Record<string, \"number\" | \"boolean\" | \"string\">;\n    paramDefaults?: Record<string, unknown>;\n    queryTransforms?: Record<string, \"number\" | \"boolean\" | \"string\">;\n    queryDefaults?: Record<string, unknown>;\n    title?: string;\n    data?: Record<string, unknown>;\n    handlerParams?: HandlerParamNode[];\n    aspects?: AspectRefNode[];\n}"
+      "signature": "export interface RouteNode {\n    permission?: string;\n    idempotency?: \"required\" | \"none\";\n    tags?: string[];\n    parse?: \"none\";\n    allowDeleteBody?: true;\n    contract?: {\n        body?: \"framework\" | \"domain\";\n        response?: \"framework\" | \"native-json\" | \"binary\" | \"stream\";\n        evidence?: string;\n    };\n    schemaKinds?: Partial<Record<\"body\" | \"params\" | \"query\" | \"headers\" | \"cookie\" | \"response\", \"opaque\" | \"declared\">>;\n    nativeResponse?: boolean;\n    method: \"GET\" | \"POST\" | \"PUT\" | \"PATCH\" | \"DELETE\" | \"HEAD\" | \"OPTIONS\";\n    path: string;\n    handler: string;\n    body?: string;\n    params?: string;\n    query?: string;\n    headers?: string;\n    cookie?: string;\n    response?: string;\n    responses?: Record<string, string>;\n    effect?: EffectRouteNode;\n    command?: string;\n    guards?: string[];\n    canMatch?: string[];\n    canDeactivate?: string[];\n    resolvers?: Record<string, string>;\n    redirectTo?: string;\n    pathMatch?: \"full\" | \"prefix\";\n    pathParams?: string[];\n    paramBindings?: string[];\n    queryBindings?: string[];\n    hasBodyBinding?: boolean;\n    paramTransforms?: Record<string, \"number\" | \"boolean\" | \"string\">;\n    paramDefaults?: Record<string, unknown>;\n    queryTransforms?: Record<string, \"number\" | \"boolean\" | \"string\">;\n    queryDefaults?: Record<string, unknown>;\n    title?: string;\n    data?: Record<string, unknown>;\n    handlerParams?: HandlerParamNode[];\n    aspects?: AspectRefNode[];\n}"
     },
     {
       "name": "runDatabaseContractsFile",
@@ -974,11 +1094,6 @@
       "signature": "export interface RuntimeBindingsResult {\n    projection: RuntimeBindingsProjection;\n    diagnostics: EnvironmentBindingDiagnostic[];\n}"
     },
     {
-      "name": "scanDrizzleSql",
-      "kind": "value",
-      "signature": "export declare function scanDrizzleSql(sourceFile: ts.SourceFile, checker: ts.TypeChecker, file: string, strict: boolean): Diagnostic[];"
-    },
-    {
       "name": "scanGeneratedArtifacts",
       "kind": "value",
       "signature": "export declare function scanGeneratedArtifacts(artifacts: Record<string, string | undefined>, strict?: boolean): Diagnostic[];"
@@ -987,6 +1102,16 @@
       "name": "scanProductionSource",
       "kind": "value",
       "signature": "export declare function scanProductionSource(options: TypeSafetyScanOptions): Diagnostic[];"
+    },
+    {
+      "name": "scanQuerySql",
+      "kind": "value",
+      "signature": "export declare function scanQuerySql(sourceFile: ts.SourceFile, checker: ts.TypeChecker, file: string, strict: boolean): Diagnostic[];"
+    },
+    {
+      "name": "schemaFromSource",
+      "kind": "value",
+      "signature": "export declare function schemaFromSource(source: string, path?: string): GraphQLSchema;"
     },
     {
       "name": "Scope",
@@ -1021,7 +1146,7 @@
     {
       "name": "SupaCloudConfig",
       "kind": "type",
-      "signature": "export interface SupaCloudConfig {\n    delivery?: DeliveryOptions;\n    graphql?: GraphqlOptions | false;\n    root?: string;\n    outDir?: string;\n    include?: string[];\n    strict?: boolean;\n    requireRouteContracts?: boolean;\n    generateClient?: boolean;\n    generateOpenApi?: boolean;\n    openApi?: NonNullable<CompileOptions[\"openApi\"]>;\n    generatePermissions?: boolean;\n    moduleBoundaryPreset?: ModuleBoundaryPresetName;\n    moduleBoundaries?: NonNullable<CompileOptions[\"moduleBoundaries\"]>;\n    typeSafety?: NonNullable<CompileOptions[\"typeSafety\"]>;\n    allowRouteCommandBindings?: boolean;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n    commandCapabilities?: CommandExecutionCapabilities;\n    treeShakeUnusedProviders?: boolean;\n}"
+      "signature": "export interface SupaCloudConfig {\n    delivery?: DeliveryOptions;\n    graphql?: GraphqlOptions | false;\n    root?: string;\n    outDir?: string;\n    include?: string[];\n    strict?: boolean;\n    requireRouteContracts?: boolean;\n    generateClient?: boolean;\n    generateOpenApi?: boolean;\n    openApi?: NonNullable<CompileOptions[\"openApi\"]>;\n    generatePermissions?: boolean;\n    moduleBoundaryPreset?: ModuleBoundaryPresetName;\n    moduleBoundaries?: NonNullable<CompileOptions[\"moduleBoundaries\"]>;\n    typeSafety?: NonNullable<CompileOptions[\"typeSafety\"]>;\n    databaseGovernance?: NonNullable<CompileOptions[\"databaseGovernance\"]>;\n    allowRouteCommandBindings?: boolean;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n    effect?: NonNullable<CompileOptions[\"effect\"]>;\n    commandCapabilities?: CommandExecutionCapabilities;\n    treeShakeUnusedProviders?: boolean;\n}"
     },
     {
       "name": "SupaCloudMigration",
@@ -1066,12 +1191,17 @@
     {
       "name": "TypeSafetyOptions",
       "kind": "type",
-      "signature": "export interface TypeSafetyOptions {\n    noAnyInGenerated?: boolean;\n    scanProductionSource?: boolean;\n    exclude?: string[];\n}"
+      "signature": "export interface TypeSafetyOptions {\n    noAnyInGenerated?: boolean;\n    scanProductionSource?: boolean;\n    exclude?: string[];\n    allowAlternativeLibraries?: string[];\n}"
     },
     {
       "name": "TypeSafetyScanOptions",
       "kind": "type",
       "signature": "export interface TypeSafetyScanOptions extends TypeSafetyOptions {\n    rootDir: string;\n    include?: string[];\n    outDir?: string;\n    strict?: boolean;\n}"
+    },
+    {
+      "name": "validateEffectPolicies",
+      "kind": "value",
+      "signature": "export declare function validateEffectPolicies(graph: ApplicationGraph, options?: EffectCompilerOptions): Diagnostic[];"
     },
     {
       "name": "validateFeatureSpec",
@@ -1084,9 +1214,14 @@
       "signature": "export declare function validateGraph(graph: ApplicationGraph, options?: boolean | ValidateOptions): Diagnostic[];"
     },
     {
+      "name": "validateJobPolicies",
+      "kind": "value",
+      "signature": "export declare function validateJobPolicies(graph: ApplicationGraph): Diagnostic[];"
+    },
+    {
       "name": "ValidateOptions",
       "kind": "type",
-      "signature": "export interface ValidateOptions {\n    strict?: boolean;\n    generateOpenApi?: boolean;\n    moduleBoundaryPreset?: ModuleBoundaryPresetName;\n    moduleBoundaries?: ModuleBoundaryRule[];\n    allowRouteCommandBindings?: boolean;\n    commandCapabilities?: CommandExecutionCapabilities;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n}"
+      "signature": "export interface ValidateOptions {\n    strict?: boolean;\n    generateOpenApi?: boolean;\n    moduleBoundaryPreset?: ModuleBoundaryPresetName;\n    moduleBoundaries?: ModuleBoundaryRule[];\n    allowRouteCommandBindings?: boolean;\n    commandCapabilities?: CommandExecutionCapabilities;\n    disallowControllerDirectDb?: boolean;\n    detectOrphanModules?: boolean;\n    effect?: EffectCompilerOptions;\n}"
     },
     {
       "name": "validateRouteContracts",

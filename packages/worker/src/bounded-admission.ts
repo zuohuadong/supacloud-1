@@ -1,5 +1,4 @@
 import type { SQL, TransactionSQL } from "bun";
-import { workerShardForKey, workerShardQueue } from "@supacloud/delivery/worker-execution";
 
 export type AdmissionDecision<T> =
   | { replay: true; value: T }
@@ -18,12 +17,6 @@ export class TaskSubmissionError extends Error {
       throw new Error("WORKER_SUBMISSION_CODE_INVALID");
     this.name = "TaskSubmissionError";
   }
-}
-
-/** Resolve the physical PGMQ queue while keeping callers on the logical name. */
-export function boundedQueueName(queueName: string, shardCount: number, orderingKey: string): string {
-  const shard = workerShardForKey({ shardCount }, orderingKey);
-  return workerShardQueue({ queue: queueName, shardCount }, shard);
 }
 
 const admissionCodes = new Set([

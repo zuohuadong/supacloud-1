@@ -48,7 +48,7 @@
     "performance:check": "bun scripts/performance.ts",
     "test:delivery": "bun test tests/delivery.test.ts",
     "test:runtime": "bun test tests/runtime.test.ts",
-    "check:runtime": "tsc -p tsconfig.runtime.json",
+    "check:runtime": "bun check --no-script -p tsconfig.runtime.json",
     "build": "tsc -p tsconfig.json",
     "test": "bun test tests/worker.test.ts"
   },
@@ -60,11 +60,8 @@
     "@pgflow/dsl": "0.16.0"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   },
-  "license": "Apache-2.0",
-  "patchedDependencies": {
-    "@pgflow/edge-worker@0.16.0": "../../patches/@pgflow%2Fedge-worker@0.16.0.patch"
-  }
+  "license": "Apache-2.0"
 }

@@ -4,7 +4,7 @@ import { STARTER_ENVIRONMENT, STARTER_ENVIRONMENT_TEST } from "./app-starter-env
 
 const { compiler: compilerMetadata, app: appMetadata, elysia: elysiaMetadata } = starterMetadata.packages;
 
-export type StarterTemplate = "minimal" | "http" | "command" | "edge";
+export type StarterTemplate = "minimal" | "http" | "command" | "edge" | "model-command";
 export interface StarterSdkDependencies {
   "@supacloud/js": string;
   "@supabase/supabase-js": string;
@@ -95,11 +95,11 @@ function baseFiles(name: string, sdkDependencies?: StarterSdkDependencies): Reco
   return {
     "package.json": json({
       name, version: "0.0.0", private: true, type: "module",
-      engines: { bun: ">=1.4.2" },
+      engines: { bun: ">=1.4.4" },
       scripts: {
         compile: "bun --no-env-file node_modules/@supacloud/compiler/dist/cli.js compile",
         "check:generated": "bun --no-env-file node_modules/@supacloud/compiler/dist/cli.js check",
-        typecheck: "tsc --noEmit",
+        typecheck: "bun check --no-script",
         inspect: "bun --no-env-file node_modules/@supacloud/compiler/dist/cli.js graph --json",
         check: "bun run compile && bun run check:generated && bun run typecheck && bun run test",
         test: "bun run compile && bun --no-env-file scripts/environment.ts test bun test",
@@ -113,12 +113,12 @@ function baseFiles(name: string, sdkDependencies?: StarterSdkDependencies): Reco
       dependencies: {
         "@supacloud/app": `^${appMetadata.version}`,
         "@supacloud/elysia": `^${elysiaMetadata.version}`,
-        elysia: "2.0.0-rc.0",
+        elysia: "2.0.0-rc.1",
         ...(sdkDependencies ?? { rxjs: appMetadata.dependencies.rxjs }),
       },
       devDependencies: {
         "@supacloud/compiler": `^${compilerMetadata.version}`,
-        "@types/bun": "^1.4.2",
+        "@types/bun": "^1.4.4",
         typescript: "^7.0.2",
       },
     }),

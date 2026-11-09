@@ -47,8 +47,8 @@
     "build": "bun run clean && bun run build:js && bun run build:types",
     "build:js": "bun run build:js:esm && bun run build:js:cjs",
     "build:types": "tsc -p tsconfig.json --emitDeclarationOnly && node ../../scripts/copy-dual-declarations.mjs dist",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "typecheck": "bun check --no-script -p tsconfig.json",
+    "typecheck:test": "bun check --no-script -p tsconfig.test.json",
     "test": "bun test",
     "prepublishOnly": "bun run build",
     "build:js:esm": "bun build src/index.ts src/client.ts src/browser.ts --outdir dist --format esm --entry-naming \"[name].mjs\" --chunk-naming \"[name]-[hash].mjs\" --target browser --splitting",
@@ -56,7 +56,7 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   },
   "license": "Apache-2.0",

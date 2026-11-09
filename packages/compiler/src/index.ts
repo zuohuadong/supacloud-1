@@ -138,7 +138,7 @@ export type {
 export { validateGraph, COMPILER_DIAGNOSTIC_CODES } from "./validate";
 export { scanGeneratedArtifacts, scanProductionSource, TYPE_SAFETY_DIAGNOSTIC_CODES } from "./type-safety";
 export type { TypeSafetyScanOptions } from "./type-safety";
-export { scanDrizzleSql, SQL_SAFETY_DIAGNOSTIC_CODES } from "./sql-safety";
+export { scanQuerySql, SQL_SAFETY_DIAGNOSTIC_CODES } from "./sql-safety";
 export {
   DEFAULT_SUPACLOUD_CONFIG,
   compileOptionsFromConfig,
@@ -167,11 +167,18 @@ export type {
   CompileOptions,
   CompileResult,
   CompileStats,
+  CompiledExecutionManifest,
   ControllerNode,
   DependencyGraphCache,
   DependencyGraphIndex,
   Diagnostic,
   DiagnosticFix,
+  ExecutionPlanCommand,
+  ExecutionPlanJob,
+  ExecutionPlanModule,
+  ExecutionPlanProvider,
+  ExecutionPlanProviderEdge,
+  ExecutionPlanRoute,
   ModuleBoundaryPresetName,
   ModuleBoundaryProfile,
   ModuleBoundaryRule,

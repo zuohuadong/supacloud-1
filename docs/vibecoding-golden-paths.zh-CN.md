@@ -11,15 +11,18 @@ SupaCloud 借鉴 Angular 的**工程体验**——单一入口、强约定、生
 
 > Angular 参考的是工程体验，不是技术实现；目标是让 Vibecoding 变成一条有约束、可诊断、可交付的开发流水线。
 
+默认策略见[《Vibecoding 默认策略》](vibecoding-default-policy.zh-CN.md)：没有特殊需求时，
+生成器和 AI 使用经过验证的最佳路径；替代方案必须显式选择并承担额外治理责任。
+
 ## 快速开始
 
 ```bash
-supacloud app init --name orders-api --template http   # 或 command / edge
+supacloud app init --root ./orders-api --name orders-api   # 默认最小项目；也可显式选择 command
 cd orders-api && bun install && bun run check
 
-supacloud context --format json > context.json   # AI 读取已编译的项目图
-supacloud doctor --format json > doctor.json     # 可执行诊断 + 修复计划
-supacloud fix --fix fix.json --write             # 应用一个 DiagnosticFix 后复检
+supacloud app context --format json > context.json   # AI 读取已编译的项目图
+supacloud app doctor --format json > doctor.json     # 可执行诊断 + 修复计划
+supacloud app fix --from-doctor doctor.json --fix-index 0  # 从诊断报告预览一个修复
 ```
 
 ## 单一入口
@@ -27,17 +30,19 @@ supacloud fix --fix fix.json --write             # 应用一个 DiagnosticFix �
 开发者与 AI 只面对一套 CLI，不需要记住底层包：
 
 ```bash
-supacloud app init
-supacloud dev
-supacloud generate ...
-supacloud check
-supacloud context --format json
-supacloud doctor
-supacloud fix --fix fix.json   # 默认预览，--write 落盘
-supacloud deploy
+supacloud app init        # 最小项目；业务切片位于 src/features/<feature>
+supacloud app dev         # 运行项目现有的本地开发脚本
+supacloud app watch       # 仅编译器 watch
+supacloud app verify-plan --target health  # 聚焦测试，不默认回退到全量测试
+supacloud app generate ...        # 生成器
+supacloud app check               # 编译器治理检查
+supacloud app context --format json
+supacloud app doctor              # 可执行健康报告
+supacloud app fix --from-doctor doctor.json --fix-index 0  # 默认预览，--write 落盘
+supacloud deploy              # 交付
 ```
 
-`app` 命名空间作为底层形式保留（`supacloud app <verb>`），顶层动词是同一实现与执行策略的别名。
+`app` 命名空间是唯一的应用开发入口；不再提供顶层动词别名，统一使用 `supacloud app <verb>`。
 
 > 生成项目中的本地开发循环是 `bun run dev`（watch、编译、重启）；
 > `supacloud dev ...` 是独立的远程项目 sync/watch/migrate 模块，二者不同。
@@ -48,27 +53,40 @@ supacloud deploy
 
 ```text
 src/
-  app/        # 应用入口与装配（受保护）
-  modules/    # 业务模块（feature slice）
+  application.ts # host factory
+  app.module.ts  # application composition
+  features/   # 业务切片与同目录测试
   shared/     # token、跨模块契约与工具
 generated/    # 编译器产物（不要手改；会做漂移校验）
 supacloud.config.ts
 ```
 
-当前脚手架入口是 `src/application.ts`，业务模块按模板位于 `src/review/`、`src/orders/` 或 `src/sync/`。生成器默认使用 `src/features/`，可通过 `--dir` 指定其他模块目录。上面的布局是目标，不代表当前生成目录，也不要求已有项目迁移。
+最小 starter 和生成器使用 `src/features/`。显式兼容模板保留 `src/review/`、
+`src/orders/` 和 `src/sync/`；不要为了采用默认布局而搬动已有项目文件。
+普通读取继续使用 RLS 保护的 PostgREST client；GraphQL 仍是显式启用的契约管线。
+`generated/**` 由编译器生成并提交，以便 `supacloud app check` 检测漂移；不要直接编辑。
 
 ## 生成器优先
 
 常见任务都有稳定、可重复的生成器，产物可读、可改、可重复生成，不是黑盒：
 
 ```bash
-supacloud generate --kind module   --name orders
-supacloud generate --kind controller --module orders
-supacloud generate --kind command  --module orders --name accept
-supacloud generate --kind query    --module orders --name list
-supacloud generate --kind job      --module orders --name sync-orders
-supacloud generate --kind contract --module orders --name accept
+supacloud app generate --kind module   --name orders
+supacloud app generate --kind controller --module orders
+supacloud app generate --kind command  --module orders --name accept
+supacloud app generate --kind query    --module orders --name list
+supacloud app generate --kind job      --module orders --name sync-orders
+supacloud app generate --kind contract --module orders --name accept
+supacloud app generate --kind feature  --name case-approval --permission cases:approve --rpc approveCase \
+  --database-source db/schema.ts --database-table public.reviews --database-type ReviewRow
 ```
+
+`feature` 生成器提供审批业务切片骨架：它同时生成 HTTP 契约、
+Query、受治理 Command、状态声明、异步任务边界、HTTP 路由、失败关闭测试和
+交付检查清单。权限名、持久化 RPC、数据库来源、表和行类型必须显式提供，
+框架不会猜测业务授权或数据库模型。
+它不生成第二套数据库模型，也不伪造数据库、身份或生产回执。
+数据库版本校验、授权、事务和任务宿主仍须接入；生成测试不代表真实数据库或 E2E 验收。
 
 ## 编译器替开发者做更多判断
 
@@ -76,7 +94,19 @@ supacloud generate --kind contract --module orders --name accept
 
 ## AI 专用上下文
 
-`supacloud context --format json` 输出已编译的模块图、Provider、路由/Command/Job、诊断与建议命令。`--target <name>` 支持模块名/类名，以及模块拥有的 Provider、Controller、Command、Job 和 Query 名称；结果仍以所属模块的邻域为边界，`subject` 保持规范模块名，版本 1 数据结构不变。存在多个所属模块时会报歧义，要求显式指定模块。AI 读结构化上下文，不接触凭据或真实用户数据。
+`supacloud app context --format json` 输出已编译的模块图、Provider、路由/Command/Job、诊断与建议命令。`--target <name>` 支持模块名/类名，以及模块拥有的 Provider、Controller、Command、Job 和 Query 名称；结果仍以所属模块的邻域为边界，`subject` 保持规范模块名，版本 1 数据结构不变。存在多个所属模块时会报歧义，要求显式指定模块。AI 读结构化上下文，不接触凭据或真实用户数据。`app check --format json` 与
+`app doctor --format json` 还会返回 `next` 命令列表，Agent 可以从失败检查或
+preview-ready 修复直接进入下一步验证，不必自行猜测命令。
+
+数据库任务使用同样的边界化上下文：
+
+```bash
+supacloud db context --root . --module_file db/modules.ts --module cases
+supacloud db context --root . --module_file db/modules.ts --target public.case_create
+```
+
+输出会指出 ZModel 结构源、SQL 行为源、对象对应的测试和允许的验证命令。AI
+应修改维护源并新增前向 migration，不应扫描完整 schema dump、手改生成物或改写已应用 migration。
 
 ## 三条黄金路径
 
@@ -99,10 +129,10 @@ supacloud generate --kind contract --module orders --name accept
 `autoFixable` 仅统计可预览条目；`inputRequired` 和 `manualFixes` 分别统计其余建议。可预览不代表通过 AST 校验、获得写入授权或业务正确；不会自动推断权限或降低策略要求。
 
 ```bash
-supacloud context --format json > context.json
-supacloud doctor --format json > doctor.json
-supacloud fix --fix fix.json          # 预览
-supacloud fix --fix fix.json --write  # 应用
+supacloud app context --format json > context.json
+supacloud app doctor --format json > doctor.json
+supacloud app fix --from-doctor doctor.json --fix-index 0          # 预览
+supacloud app fix --from-doctor doctor.json --fix-index 0 --write  # 审查后应用
 ```
 
 ## 共享 Command 装配
@@ -115,9 +145,34 @@ supacloud fix --fix fix.json --write  # 应用
 
 ## 兼容与发布
 
+### 查询消费者的默认安全入口
+
+对于需要 Promise 的页面 loader，使用 `@supacloud/query` 的 `fetchQueryResult`，
+传入生成的 `queryOptions`、既有领域 decoder 和页面/对象生命周期 signal。
+框架复用 QueryClient 的原始响应缓存，每个调用者在缓存命中时仍独立解码；
+取消一个调用者不取消其他观察者，显式刷新阻止旧响应覆盖新缓存，
+敏感结果可用 `cache: "none"` 绕过缓存。详见
+[查询消费者契约与验收](../packages/query/README.md#imperative-reads-with-domain-contracts)。
+
+这是一项查询执行层的减负能力，不是全链路黄金路径已经完成。业务仍定义领域 Schema、
+租户/主体身份键和组件目标生命周期；不把任意 SQL 结果自动推断为可靠契约。
+该入口不处理写命令、事务、后台任务终态，也不自动迁移 FA 或发布 npm 包。
+消费者采用后可移除对应的请求计数、取消和逐调用者解码包装，但需保留尚未迁移的
+传输、身份切换、业务解码器及写后失效策略。
+
 上下文与修复计划增量不改变现有运行时 DI、权限、事务、队列、前端传输或部署拓扑。Command 绑定是额外的便捷入口，原有 API 保留。
 
 CLI 在仓库开发时依赖本地 compiler，确保测试覆盖配套实现。发布时须通过现有 `sync-compiler-dependency.mjs` 将本地引用转换为已发布版本范围。本地构建通过不等于 npm 已发布或生产验收通过。
+
+### Database 到 SVAdmin 的列元数据导出
+
+CLI `database` 的 `export_svadmin_schema` 只导出列、主键和外键元数据，供后续的 `@svadmin/mcp` `svadmin_generateResource` 使用。它本身不生成契约或 Svelte 组件，也不能替代数据库验收。
+
+```bash
+database action="export_svadmin_schema" table="orders" format="json"
+```
+
+schema 和 table 必须是未加引号的 PostgreSQL 标识符。没有主键约束时，名为 `id` 的列会被标记为主键；没有外键约束时，以 `_id` 结尾的列会被标记为外键。
 
 ## 不建议做的事
 

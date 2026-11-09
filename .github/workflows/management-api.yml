@@ -57,7 +57,7 @@ concurrency:
 # gitleaks:allow
 env:
   NODE_VERSION: "24.x"
-  BUN_VERSION: "1.4.2"
+  BUN_VERSION: "1.4.4"
   GO_VERSION: "1.27.1"
   XCADDY_VERSION: "v0.4.7"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -107,7 +107,7 @@ jobs:
 
       - name: Type check
         working-directory: packages/management-api
-        run: bun run tsc --noEmit
+        run: bun run typecheck
 
       - name: Audit Management API dependencies
         working-directory: packages/management-api
@@ -190,7 +190,7 @@ jobs:
               bun install --ignore-scripts --frozen-lockfile --cwd ../..
               node ../../scripts/workspace/prepare.mjs supacloud-js
               bun install --frozen-lockfile
-              bun x --no-install tsc -p tsconfig.commands.json
+              bun check --no-script -p tsconfig.commands.json
               bun run typecheck
               bun run typecheck:test
               bun run build
@@ -318,7 +318,7 @@ jobs:
             script: |
               bun run ../../scripts/build-command-dependencies.ts db
               bun install --frozen-lockfile
-              bun x --no-install tsc -p tsconfig.commands.json
+              bun check --no-script -p tsconfig.commands.json
               bun run typecheck
               bun run typecheck:test
               bun test
@@ -641,6 +641,8 @@ jobs:
           node --test .github/scripts/publish-npm-package.test.mjs
           node --check .github/scripts/sync-supacloud-dependencies.mjs
           node --test .github/scripts/sync-supacloud-dependencies.test.mjs
+          node --check .github/scripts/recover-edge-runtime-release.mjs
+          node --test .github/scripts/recover-edge-runtime-release.test.mjs
 
   unit-test:
     name: Unit Tests

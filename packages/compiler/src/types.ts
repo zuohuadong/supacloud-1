@@ -67,6 +67,8 @@ export interface FunctionalInjectNode {
 }
 
 export interface AspectRefNode {
+  /** Operation-specific factory binding, verified against the selected static boundary. */
+  operation?: { kind: "route" | "command" | "job"; name: string };
   /** Exact project-local source path for context packs. */
   file?: string;
   /** Exported symbol name used in the generated static import. */
@@ -163,6 +165,13 @@ export type DiagnosticFix =
       route: string;
     };
 
+export interface DependencyOptions {
+  optional?: boolean;
+  self?: boolean;
+  skipSelf?: boolean;
+  host?: boolean;
+}
+
 export interface ProviderNode {
   /** Token name (InjectionToken variable name or class name). */
   token: string;
@@ -175,11 +184,13 @@ export interface ProviderNode {
   scope: Scope;
   /** Token names in constructor/factory parameter order. */
   deps: string[];
-  /** Parameter tokens that are marked @Optional() (receive undefined if unresolved). */
+  /** Parameter-indexed modifiers; takes precedence over legacy token summaries. */
+  dependencyOptions?: DependencyOptions[];
+  /** Parameter tokens that are marked @Optional() (receive null if unresolved). */
   optionalDeps?: string[];
-  /** Parameter tokens marked @Self() (must be resolved from current module's own providers). */
+  /** Parameter tokens marked @Self() (must be resolved at the current scope). */
   selfDeps?: string[];
-  /** Parameter tokens marked @SkipSelf() (must NOT be resolved from current module's own providers). */
+  /** Parameter tokens marked @SkipSelf() (skip the current scope; a scoped consumer may use its module application parent). */
   skipSelfDeps?: string[];
   /** Parameter tokens marked @Host(). */
   hostDeps?: string[];
@@ -210,7 +221,43 @@ export interface HandlerParamNode {
   default?: unknown;
 }
 
+export type EffectRetryPolicy = "none" | "explicit";
+
+export interface EffectErrorMappingNode {
+  tag: string;
+  status: number;
+  code: string;
+  message?: string;
+  /** Use the failure value's own `code` string when it is non-empty and bounded. */
+  codeFromError?: boolean;
+  /** Use the failure value's own `message` string when it is non-empty and bounded. */
+  messageFromError?: boolean;
+  /** Use the failure value's own HTTP status when it is an integer from 400 to 599. */
+  statusFromError?: boolean;
+  /**
+   * In-process retry allow-list. Only a declared 5xx failure that did not
+   * commit may be retried by the framework adapter.
+   */
+  retryable?: boolean;
+  /** The write may already have happened. The framework adapter must not retry it. */
+  outcomeUnknown?: boolean;
+}
+
+export interface EffectRouteNode {
+  required: true;
+  errors?: EffectErrorMappingNode[];
+  dependencies?: string[];
+  retry?: EffectRetryPolicy;
+  maxAttempts?: number;
+  timeoutMs?: number;
+}
+
 export interface RouteNode {
+  permission?: string;
+  /** Transport-level idempotency contract, independent of route command binding. */
+  idempotency?: "required" | "none";
+  /** Explicit query cache tags exposed to generated clients. */
+  tags?: string[];
   parse?: "none";
   allowDeleteBody?: true;
   contract?: {
@@ -230,6 +277,10 @@ export interface RouteNode {
   cookie?: string;
   response?: string;
   responses?: Record<string, string>;
+  /** Static Effect execution contract for this route. */
+  effect?: EffectRouteNode;
+  /** Simple route profile: handler may return a Promise/value without Effect governance. */
+  effectMode?: "simple";
   /** @Command-decorated class explicitly bound by the route. */
   command?: string;
   /** Route guards executed before handler (Angular CanActivateFn style). */
@@ -275,6 +326,8 @@ export interface ControllerNode {
   path: string;
   scope: Scope;
   deps: string[];
+  /** Parameter-indexed modifiers; takes precedence over legacy token summaries. */
+  dependencyOptions?: DependencyOptions[];
   /** Class implements OnDestroy interface or onDestroy method. */
   hasOnDestroy?: boolean;
   /** Class exposes an application startup hook. */
@@ -298,18 +351,29 @@ export interface ControllerNode {
 
 export interface CommandNode {
   rpc?: string;
+  branches?: CommandBranchNode[];
   className: string;
   name: string;
   permission?: string;
   transaction: "required" | "none";
   audit?: string;
   idempotency: "required" | "none";
+  tenantScope?: "required" | "none";
   /** Automatically registered without manual module declaration. */
   standalone?: boolean;
   /** Infrastructure resources this command uses, with the declared operations. */
   uses?: InfraResourceUseRef[];
   /** Explicit aspects applied around this command. */
   aspects?: AspectRefNode[];
+}
+
+export interface CommandBranchNode {
+  when: string;
+  rpc: string;
+  transaction: "required" | "none";
+  audit?: string;
+  idempotency: "required" | "none";
+  boundary?: "database" | "external";
 }
 
 export interface JobNode {
@@ -333,14 +397,135 @@ export interface JobNode {
   maxAttempts?: number;
   /** Adapter-owned idempotency requirement. */
   idempotency?: JobIdempotency;
+  tenantScope?: "required" | "none";
   /** Infrastructure resources this job uses, with the declared operations. */
   uses?: InfraResourceUseRef[];
   aspects?: AspectRefNode[];
 }
 
+/** Static provider information exposed to deployment and tooling consumers. */
+export interface ExecutionPlanProvider {
+  /** Effective injection modifiers in parameter order. */
+  dependencyOptions?: DependencyOptions[];
+  token: string;
+  kind: ProviderKind;
+  scope: Scope;
+  deps: string[];
+  optionalDeps: string[];
+  selfDeps: string[];
+  skipSelfDeps: string[];
+  hostDeps: string[];
+  multi: boolean;
+  exported: boolean;
+  lifecycle: { init: boolean; destroy: boolean };
+}
+
+export interface ExecutionPlanProviderEdge {
+  from: string;
+  to: string;
+  relation: "local" | "imported" | "root" | "context" | "external" | "unresolved";
+}
+
+export interface ExecutionPlanRoute {
+  method: RouteNode["method"];
+  path: string;
+  controller: string;
+  handler: string;
+  scope: Scope;
+  executor: "route" | "command";
+  invoker: "direct" | "pipeline";
+  commandBoundary?: "route" | "handler";
+  effect?: EffectRouteNode;
+  effectMode?: "simple";
+  stages: string[];
+  command?: string;
+  guards: string[];
+  canMatch: string[];
+  canDeactivate: string[];
+  resolvers: string[];
+  aspects: string[];
+  plugin: {
+    name: string;
+    registration: "registerRoutes";
+    lifecycle: string[];
+    macros: string[];
+    conditions: string;
+  };
+}
+
+export interface ExecutionPlanCommand {
+  name: string;
+  className: string;
+  executor: "commandExecutor";
+  adapter: string | null;
+  permission?: string | null;
+  audit?: string | null;
+  transaction?: CommandNode["transaction"];
+  idempotency?: CommandNode["idempotency"];
+  branches?: CommandBranchNode[];
+  tenantScope?: CommandNode["tenantScope"];
+  requiredCapabilities: {
+    permission: boolean;
+    audit: boolean;
+    idempotency: boolean;
+    transaction: boolean;
+  };
+  aspects: string[];
+}
+
+export interface ExecutionPlanJob {
+  name: string;
+  className: string;
+  scope: Scope;
+  mode: JobMode;
+  timeoutSec: number | null;
+  maxAttempts: number | null;
+  idempotency: JobIdempotency | null;
+  aspects: string[];
+}
+
+export interface ExecutionPlanModule {
+  name: string;
+  className: string;
+  tags: string[];
+  imports: string[];
+  providers: ExecutionPlanProvider[];
+  providerEdges: ExecutionPlanProviderEdge[];
+  scopes: { application: string[]; request: string[]; job: string[] };
+  lifecycle: {
+    initialize: Array<{ key: string; index?: number }>;
+    destroy: Array<{ key: string; index?: number }>;
+    requestDestroy: Array<{ key: string; index?: number }>;
+    jobDestroy: Array<{ key: string; index?: number }>;
+  };
+  plugin: {
+    name: string;
+    lifecycle: string[];
+    macros: string[];
+    conditions: string;
+    routeCount: number;
+  };
+  routes: ExecutionPlanRoute[];
+  commands: ExecutionPlanCommand[];
+  jobs: ExecutionPlanJob[];
+  aspects: string[];
+}
+
+/** Versioned, transport-aware plan emitted alongside static application factories. */
+export interface CompiledExecutionManifest {
+  version: 1;
+  compiler: "@supacloud/compiler";
+  host: { adapter: "elysia"; api: "2.x"; reflection: false; proxy: false };
+  di: { runtime: "angular-compatible"; generation: "static"; scopes: Scope[] };
+  boundaries?: ModuleBoundaryRule[];
+  modules: ExecutionPlanModule[];
+}
+
 export interface QueryNode {
   className: string;
   name: string;
+  permission?: string;
+  tenantScope?: "required" | "none";
 }
 
 export interface FeatureTransitionNode {
@@ -350,14 +535,41 @@ export interface FeatureTransitionNode {
   permission?: string;
   command?: string;
   route?: string;
+  routeBinding?: "command" | "controller";
   transaction?: "required" | "none";
   idempotency?: "required" | "none";
   audit?: string;
+  /** Job that continues the transition after the durable write is committed. */
+  job?: string;
+  /** Explicit query tags invalidated after the transition succeeds. */
+  invalidateTags?: string[];
+  persistence?: FeaturePersistenceNode;
+}
+
+export interface FeaturePersistenceNode {
+  boundary: "database" | "external";
+  optimisticLock: "required" | "none";
+  versionField?: string;
+  tenantField?: string;
+  stateField?: string;
+  receipt: "required" | "none";
+  reconciliation: "required" | "none";
+}
+
+export interface FeatureDatabaseSourceNode {
+  source: string;
+  table: string;
+  rowType: string;
 }
 
 export interface FeatureSpecNode {
   name: string;
   states: string[];
+  database?: FeatureDatabaseSourceNode;
+  tenantField?: string;
+  readPermission?: string;
+  requiredAdapters?: string[];
+  requiredAdapterScopes?: Record<string, Scope>;
   transitions: FeatureTransitionNode[];
   file?: string;
   line?: number;
@@ -418,6 +630,8 @@ export interface ApplicationGraph {
 }
 
 export interface CompileOptions {
+  /** Optional fail-closed database source and Catalog governance. */
+  databaseGovernance?: DatabaseGovernanceOptions;
   /** Opt-in, offline GraphQL query contracts backed by a role-scoped schema snapshot. */
   graphql?: GraphqlOptions;
   /** Require schemas for bound route inputs and responses. Does not prove runtime validation. */
@@ -442,7 +656,7 @@ export interface CompileOptions {
   disallowControllerDirectDb?: boolean;
   /** Detect modules declared in the project that are unreachable from any root module. */
   detectOrphanModules?: boolean;
-  /** Explicit unsafe opt-in to emit artifacts with errors (default: false). */
+  /** Emit artifacts with governance errors (default: false). Type errors always prevent emission. */
   writeOnError?: boolean;
   /** Generate typed API client in client.ts (default: false). */
   generateClient?: boolean;
@@ -463,6 +677,34 @@ export interface CompileOptions {
   changedPaths?: string[];
   /** Type-safety gates for generated artifacts and production source. */
   typeSafety?: TypeSafetyOptions;
+  /** Compile-time Effect governance for routes and command handlers. */
+  effect?: EffectCompilerOptions;
+}
+
+export interface EffectCompilerOptions {
+  /** Require every discovered route to declare an Effect contract. */
+  requireRouteEffects?: boolean;
+  /** Require explicit public mappings for Effect failures. */
+  requireErrorMappings?: boolean;
+  /** Require an explicit dependency list for Effect environments. */
+  requireDependencies?: boolean;
+  /** Reject unknown/any failures and require a tagged failure union. */
+  requireTaggedErrorTypes?: boolean;
+  /** Require effect.dependencies to exactly match the Effect environment type. */
+  requireExactDependencyTypes?: boolean;
+  /** Require a timeout whenever the route declares Effect dependencies. */
+  requireTimeoutForDependencies?: boolean;
+  /** Reject direct Effect.run* calls inside governed route handlers. */
+  forbidDirectRuntimeExecution?: boolean;
+  /** Reject direct throw statements inside governed route handlers. */
+  forbidDirectThrows?: boolean;
+  /** Require every route that declares an Effect contract to write an explicit retry policy. */
+  requireRetryPolicy?: boolean;
+  /**
+   * Materialize an omitted retry policy when requireRetryPolicy is disabled.
+   * The only project-level default is "none"; "explicit" stays route-local.
+   */
+  defaultRetry?: "none";
 }
 
 export interface GraphqlOptions {
@@ -510,6 +752,8 @@ export type OpenApiSecurityScheme =
     };
 
 export interface OpenApiOptions {
+  /** Emit eager document and JSON snapshots for compatibility. Set false for factory-only imports. Defaults to true. */
+  snapshots?: boolean;
   title?: string;
   version?: string;
   description?: string;
@@ -529,12 +773,29 @@ export interface GraphqlContractSummary {
 }
 
 export interface TypeSafetyOptions {
-  /** Reject the `any` keyword in generated TypeScript artifacts. */
+  /** @deprecated Generated `any` checks are mandatory; false no longer disables them. */
   noAnyInGenerated?: boolean;
-  /** Scan non-test production source for unsafe type escapes and widening. */
+  /** @deprecated Production type checks are mandatory; false no longer disables them. */
   scanProductionSource?: boolean;
   /** Additional relative glob patterns excluded from the production-source scan. */
   exclude?: string[];
+  /** Explicitly approved alternatives to the default client/stream libraries. */
+  allowAlternativeLibraries?: string[];
+}
+
+export interface DatabaseGovernanceOptions {
+  /** Off for existing callers; check validates sources offline, enforce also checks SQL and Catalog. */
+  mode: "off" | "check" | "enforce";
+  /** Relative to the configuration directory, or rootDir for programmatic callers. */
+  projectRoot?: string;
+  /** Project-relative module file exporting defineDatabaseModule(...) results. */
+  moduleFile?: string;
+  /** Explicit URL for programmatic callers; configuration files should use databaseUrlEnv. */
+  databaseUrl?: string;
+  /** Environment variable containing a read-only PostgreSQL connection URL. */
+  databaseUrlEnv?: string;
+  /** Schemas included in the live Catalog query. */
+  schemas?: string[];
 }
 
 export interface ModuleBoundaryRule {
@@ -576,6 +837,7 @@ export interface ValidateOptions {
   disallowControllerDirectDb?: boolean;
   /** Detect modules declared in the project that are unreachable from any root module. */
   detectOrphanModules?: boolean;
+  effect?: EffectCompilerOptions;
 }
 
 /** Runtime capabilities declared by the Command executor. */
@@ -583,7 +845,13 @@ export interface CommandExecutionCapabilities {
   /** Require named persistent adapters and explicit audit/idempotency declarations. */
   requirePersistentAdapters?: boolean;
   /** Explicit named adapters; declarations must also be tested against the database. */
-  rpc?: Record<string, { audit?: boolean; idempotency?: boolean; transaction?: boolean; boundary?: "database" | "external" }>;
+  rpc?: Record<string, {
+    audit?: boolean;
+    idempotency?: boolean;
+    reconcile?: boolean;
+    transaction?: boolean;
+    boundary?: "database" | "external";
+  }>;
   /** Whether runtime permission checks are supported. */
   permission?: boolean;
   /** Whether runtime audit persistence is supported. */

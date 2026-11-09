@@ -15,6 +15,10 @@ export interface PolicyDecl {
   roles: string[];
   /** Relative path to SQL source file */
   source: string;
+  /** Exact pg_get_expr output; null requires an absent expression. Omit to skip. */
+  usingExpr?: string | null;
+  /** Exact pg_get_expr output; null requires an absent expression. Omit to skip. */
+  checkExpr?: string | null;
   /** Relative path to test file */
   tests?: string[];
 }
@@ -22,6 +26,8 @@ export interface PolicyDecl {
 export interface FunctionDecl {
   /** Schema-qualified function name: public.case_create */
   name: string;
+  /** Exact schema.name(oidvectortypes(proargtypes)), e.g. public.case_create(uuid, text). */
+  signature?: string;
   source: string;
   /** Business permission identifier, e.g. case.create */
   permission?: string;
@@ -36,6 +42,8 @@ export interface TriggerDecl {
   name: string;
   /** Schema-qualified table name */
   table: string;
+  /** Catalog triggers are expected to be enabled unless explicitly overridden. */
+  enabled?: boolean;
   source: string;
 }
 
@@ -47,16 +55,11 @@ export interface GrantDecl {
   source: string;
 }
 
-/** Internal structure shape of Drizzle Table (type-level compatibility only, does not import drizzle-orm) */
-export interface DrizzleTableLike {
-  _: { name: string; schema?: string };
-}
-
-export type TableRef = string | DrizzleTableLike;
+export type TableRef = string;
 
 export interface DatabaseModuleOptions {
   name: string;
-  /** Owning tables: Drizzle table object or schema-qualified table name */
+  /** Owning tables: schema-qualified table name */
   tables?: TableRef[];
   policies?: PolicyDecl[];
   functions?: FunctionDecl[];
@@ -75,9 +78,8 @@ export interface DatabaseModule {
 }
 
 function normalizeTable(ref: TableRef): string {
-  if (typeof ref === 'string') return ref;
-  const schema = ref._.schema ?? 'public';
-  return `${schema}.${ref._.name}`;
+  if (typeof ref !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(ref)) throw new Error('Expected a schema-qualified table name');
+  return ref;
 }
 
 export function defineDatabaseModule(options: DatabaseModuleOptions): DatabaseModule {

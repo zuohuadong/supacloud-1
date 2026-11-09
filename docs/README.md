@@ -77,6 +77,7 @@
 - [PowerSync Local-First Integration](./powersync-local-first.md) - Self-hosted sync boundary, replication readiness, RLS upload path, ELN conflicts, and cleanup
 - [Application Architecture Guide](./application-architecture.md) - Scalable monorepo, migration, Function, worker, and contract boundaries for SupaCloud applications
 - [Application Framework](./application-framework.md) - Angular-style modules, compile-time DI, and Elysia runtime (`@supacloud/app` / `compiler` / `elysia`)
+- [Framework Performance Benchmark](./framework-performance-benchmark.zh-CN.md) - Release-triggered SupaCloud versus native framework comparison and CI methodology
 - [Application Development Context](./application-development-context.md) - A stable, redacted projection of the application graph for the Web Console application view and a future Developer MCP
 - [Application Resource Model](./application-resource-model.md) - Logical infrastructure resources, resource uses, and SC8101-SC8105 diagnostics
 - [Environment Bindings](./environment-bindings.md) - Static per-environment binding of logical resources, and SC8106-SC8108 diagnostics

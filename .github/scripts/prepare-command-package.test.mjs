@@ -257,7 +257,7 @@ test('targeted Elysia recovery skips unrelated publications and release creation
     assert.equal(condition.includes('inputs.recover_elysia == true'), step.includes('Publish elysia adapter to NPM'));
   }
 });
-test('elysia publication preserves beta support without waiting for build-only overrides', () => {
+test('elysia publication preserves RC support without waiting for build-only overrides', () => {
   const input = JSON.parse(readFileSync(new URL('../../packages/elysia/package.json', import.meta.url), 'utf8'));
   const localSiblings = new Map(
     ['app', 'contracts', 'commands', 'delivery', 'compiler', 'db'].map((directory) => {
@@ -270,7 +270,7 @@ test('elysia publication preserves beta support without waiting for build-only o
     const pkg = localSiblings.get(`@supacloud/${name}`);
     return `${pkg.name}@${pkg.version}`;
   }));
-  assert.deepEqual(result.package['peerDependencies'], { elysia: '2.0.0-beta.21' });
+  assert.deepEqual(result.package['peerDependencies'], { elysia: '2.0.0-rc.1' });
   assert.equal(input.overrides['@supacloud/delivery'], 'file:../delivery');
   assert.doesNotMatch(JSON.stringify(result.package), /file:|workspace:|link:/);
 });
@@ -318,7 +318,7 @@ test('clean CI builds local dependencies before checking command consumers', () 
     assert.ok(block);
     if (name === 'supacloud-js') {
       assert.match(block, /bun install --ignore-scripts --frozen-lockfile --cwd \.\.\/\.\.\n\s+node \.\.\/\.\.\/scripts\/workspace\/prepare\.mjs supacloud-js\n\s+bun install --frozen-lockfile/);
-      assert.match(block, /tsc -p tsconfig\.commands\.json[\s\S]*bun run typecheck\n[\s\S]*bun run typecheck:test[\s\S]*bun run build[\s\S]*bun run typecheck:consumer[\s\S]*bun test[\s\S]*audit_dependencies\.ts/);
+      assert.match(block, /bun check --no-script -p tsconfig\.commands\.json[\s\S]*bun run typecheck\n[\s\S]*bun run typecheck:test[\s\S]*bun run build[\s\S]*bun run typecheck:consumer[\s\S]*bun test[\s\S]*audit_dependencies\.ts/);
     } else {
       assert.match(block, new RegExp(`build-command-dependencies\\.ts ${name}[\\s\\S]*bun install --frozen-lockfile`));
     }

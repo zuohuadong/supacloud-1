@@ -12,13 +12,105 @@ import { GOOD_PROJECT_FILES } from "./fixtures/good-project";
 import { requireValue, writeFixtureProject } from "./fixtures/helpers";
 import { FIXTURE_TSCONFIG, RUNTIME_SOURCE } from "./fixtures/runtime-source";
 import { scanGeneratedArtifacts } from "./type-safety";
-import type { ApplicationGraph, CompileResult } from "./types";
+import type { ApplicationGraph, CompileResult, CompiledExecutionManifest } from "./types";
 import * as ts from "@typescript/typescript6";
+import { ApplicationError, createModulePlugin, type CompiledModule } from "../../elysia/src/index";
 
 let rootDir: string;
 let outDir: string;
 let result: CompileResult;
 let applicationCode: string;
+
+test("static registration mounts generated routes and refuses pre-migration HTTP descriptors", async () => {
+  const root = await mkdtemp(join(tmpdir(), "static-registration-"));
+  try {
+    const graph: ApplicationGraph = { externalTokens: [], modules: [{
+      name: "http", className: "HttpModule", file: "source.ts", line: 1,
+      imports: [], exports: [], providers: [], commands: [], queries: [],
+      controllers: [{ className: "Probe", path: "/api/", scope: "application", deps: [],
+        file: "source.ts", importPath: "source", routes: [
+          { method: "GET", path: "/health", handler: "read" },
+          { method: "POST", path: "/echo", handler: "echo", handlerParams: [{ name: "body", kind: "body" }] },
+        ] }],
+    }] };
+    const rendered = renderApplication(graph, { rootDir: root, outDir: join(root, "generated") });
+    await writeFixtureProject(root, {
+      "generated/application.ts": rendered.applicationCode,
+      "source.ts": "export class Probe { read() { return 'ready'; } echo(body: unknown) { return body; } }",
+    });
+    const generated = await import(pathToFileURL(join(root, "generated/application.ts")).href) as {
+      createCompiledModules(): CompiledModule[];
+    };
+    const module = requireValue(generated.createCompiledModules()[0]);
+    const paths: string[] = [];
+    module.registerRoutes?.((controller, route, path) => {
+      expect(controller).toBe(module.controllers[0]);
+      expect(controller.routes).toContain(route);
+      paths.push(path);
+    });
+    expect(paths).toEqual(["/api/health", "/api/echo"]);
+    const plan = (JSON.parse(rendered.manifestJson) as { executionPlan: CompiledExecutionManifest }).executionPlan;
+    expect(plan.modules[0]?.routes.map(route => route.invoker)).toEqual(["direct", "direct"]);
+    expect(plan.modules[0]?.plugin.macros).toEqual([]);
+    const app = createModulePlugin(module, module.createServices({}, {}));
+    expect(await (await app.handle(new Request("http://localhost/api/health"))).text()).toBe("ready");
+    expect(await (await app.handle(new Request("http://localhost/api/echo", {
+      method: "POST", headers: { "content-type": "application/json" }, body: '{"ok":true}',
+    }))).json()).toEqual({ ok: true });
+    const old = { ...module };
+    delete old.registerRoutes;
+    expect(() => createModulePlugin(old, {})).toThrow("Upgrade @supacloud/compiler with @supacloud/elysia");
+    try { createModulePlugin(old, {}); } catch (error) {
+      expect(error).toMatchObject({ code: "COMPILED_ROUTE_REGISTRATION_REQUIRED" });
+    }
+    const invalid = { ...module };
+    Object.assign(invalid, { registerRoutes: "invalid" });
+    expect(() => createModulePlugin(invalid, {})).toThrow("requires a compiler-emitted registerRoutes plan");
+    expect(() => createModulePlugin({ ...module, registerRoutes: () => {} }, {})).toThrow("Incomplete static route registration");
+    expect(() => createModulePlugin({ ...module, registerRoutes(register) {
+      register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/api/health");
+      register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/api/health");
+    } }, module.createServices({}, {}))).toThrow("Invalid static route registration");
+    expect(() => createModulePlugin({ ...module, registerRoutes(register) {
+      const controller = this.controllers[0]!;
+      register(controller, { ...controller.routes[0]! }, "/unvalidated");
+    } }, {})).toThrow("Invalid static route registration");
+    expect(() => createModulePlugin({ name: "worker-only", controllers: [], createServices: () => ({}) }, {})).not.toThrow();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("static registration keeps authorization outside command aspects and request cleanup", async () => {
+  const events: string[] = [];
+  const compiled: CompiledModule = {
+    name: "governed", createServices: () => ({}),
+    createRequestScope: () => ({ controller: { run: () => { events.push("handler"); return "done"; } } }),
+    destroyRequestScope: async () => { events.push("cleanup"); },
+    aspects: [(_context, next) => { events.push("aspect"); return next(); }],
+    commands: [{ className: "Update", name: "orders.update", permission: "orders.write", transaction: "none", idempotency: "none" }],
+    controllers: [{ path: "/", serviceKey: "controller", scope: "request", routes: [{
+      method: "POST", path: "/update", handler: "run", command: "Update",
+      invoker: (controller) => {
+        if (!controller || typeof controller !== "object" || !("run" in controller) || typeof controller.run !== "function") throw new Error("Missing fixture controller");
+        return controller.run();
+      },
+    }] }],
+    registerRoutes(register) { register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/update"); },
+  };
+  let allowed = false;
+  const app = createModulePlugin(compiled, {}, undefined, { commandGovernance: { authorize: () => {
+    events.push("authorize");
+    if (!allowed) throw new ApplicationError("Denied", { status: 403, code: "DENIED" });
+  } } });
+  const request = () => new Request("http://localhost/update", { method: "POST" });
+  expect((await app.handle(request())).status).toBe(403);
+  await Bun.sleep(0);
+  expect(events).toEqual(["authorize", "cleanup"]);
+  events.length = 0;
+  allowed = true;
+  expect(await (await app.handle(request())).text()).toBe("done");
+  await Bun.sleep(0);
+  expect(events).toEqual(["authorize", "aspect", "handler", "cleanup"]);
+});
 
 beforeAll(async () => {
   rootDir = await mkdtemp(join(tmpdir(), "supacloud-compiler-gen-"));
@@ -59,6 +151,27 @@ describe("compileProject：总体结果", () => {
     expect(manifest.commandGovernance.commands).toContainEqual(expect.objectContaining({
       module: "case", name: "case.accept", permission: "case.accept", idempotency: "required",
     }));
+    expect(manifest.executionPlan).toMatchObject({
+      version: 1,
+      compiler: "@supacloud/compiler",
+      host: { adapter: "elysia", reflection: false, proxy: false },
+      di: { runtime: "angular-compatible", generation: "static" },
+    });
+    const plan = manifest.executionPlan as CompiledExecutionManifest;
+    const casePlan = requireValue(plan.modules.find((module) => module.name === "case"));
+    expect(casePlan.commands).toEqual([expect.objectContaining({
+      name: "case.accept",
+      executor: "commandExecutor",
+      requiredCapabilities: { permission: true, audit: true, idempotency: true, transaction: true },
+    })]);
+    expect(casePlan.providerEdges).toContainEqual({ from: "CASE_REPOSITORY", to: "DB_CLIENT", relation: "external" });
+    expect(casePlan.providerEdges).toContainEqual({ from: "CaseService", to: "CASE_REPOSITORY", relation: "local" });
+    expect(casePlan.routes[0]).toMatchObject({
+      path: "/cases/:caseId/accept",
+      executor: "command",
+      command: "case.accept",
+      stages: ["command-executor", "authorize", "idempotency", "transaction", "handler", "audit"],
+    });
   });
 
   test("contracts.manifest.json 汇总 command/query/route/RPC/权限和 evidence", async () => {
@@ -205,6 +318,8 @@ for (const module of createUnscopedModules()) {
     expect(applicationCode).toContain("export interface CompiledController {");
     expect(applicationCode).toContain("export interface CompiledRoute {");
     expect(applicationCode).toContain("export interface CompiledCommand {");
+    expect(applicationCode).toContain("registerRoutes(register)");
+    expect(applicationCode).toContain('register(this.controllers[0]!, this.controllers[0]!.routes[0]!, "/cases/:caseId/accept")');
     expect(applicationCode).not.toContain("@supacloud/app");
     expect(applicationCode).not.toContain("@supacloud/elysia");
   });
@@ -217,7 +332,7 @@ for (const module of createUnscopedModules()) {
       'import { createLogger } from "../src/features/audit/logger";',
     );
     expect(applicationCode).toContain(
-      'import { DrizzleCaseRepository } from "../src/features/case/case.repository";',
+      'import { CaseRepository } from "../src/features/case/case.repository";',
     );
     expect(applicationCode).toContain(
       'import { AcceptParams, AcceptResult, CreateCaseBody } from "../src/features/case/contracts";',
@@ -325,7 +440,7 @@ export class LifecycleController {
         ts.forEachChild(node, visit);
       };
       visit(sourceFile);
-      expect(hits).toEqual({ instance: 3, init: 1, teardown: 1, handlerCall: 2 });
+      expect(hits).toEqual({ instance: 3, init: 1, teardown: 1, handlerCall: 3 });
       const generated = await import(pathToFileURL(join(root, "generated/application.ts")).href);
       const [module] = generated.createCompiledModules() as Array<{
         createServices: (deps: Record<string, unknown>, imported: Record<string, Record<string, unknown>>) => Record<string, unknown>;
@@ -351,7 +466,7 @@ export class LifecycleController {
       "const auditService = new AuditService(auditConfig, logger);",
     );
     expect(applicationCode).toContain(
-      'const caseRepository = new DrizzleCaseRepository(deps["dbClient"] as ConstructorParameters<typeof DrizzleCaseRepository>[0]);',
+      'const caseRepository = new CaseRepository(deps["dbClient"] as ConstructorParameters<typeof CaseRepository>[0]);',
     );
     expect(applicationCode).toContain(
       'const caseService = new CaseService(caseRepository, imported["audit"]["auditService"] as ConstructorParameters<typeof CaseService>[1]);',

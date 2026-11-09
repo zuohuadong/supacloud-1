@@ -1,17 +1,80 @@
-import type { Diagnostic, FeatureSpecNode, ModuleNode } from "./types";
-import { joinRoutePaths } from "./util";
+import type { ControllerNode, Diagnostic, FeatureSpecNode, ModuleNode, RouteNode } from "./types";
+import { isJobContextToken, joinRoutePaths } from "./util";
+
+export function featureTransitionForRoute(
+  module: ModuleNode,
+  controller: ControllerNode,
+  route: RouteNode,
+): FeatureSpecNode["transitions"][number] | undefined {
+  const routePath = `${route.method} ${joinRoutePaths(controller.path, route.path)}`;
+  return module.featureSpec?.transitions.find((transition) => transition.route === routePath);
+}
 
 /** Validate the declaration itself and its bindings within the owning module. */
 export function validateFeatureSpec(spec: FeatureSpecNode, module?: ModuleNode): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const error = (code: string, message: string): void => {
-    diagnostics.push({ severity: "error", code, message, file: spec.file, line: spec.line });
+    diagnostics.push({ severity: "error", code, message,
+      ...(spec.file === undefined ? {} : { file: spec.file }),
+      ...(spec.line === undefined ? {} : { line: spec.line }),
+    });
   };
   if (!spec.name.trim() || spec.states.length === 0 ||
     spec.states.some((state) => !state.trim()) || new Set(spec.states).size !== spec.states.length) {
     error("invalid-feature-states", "Feature name and states must be non-empty; states must be unique.");
   }
+  if (spec.tenantField !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.tenantField)) {
+    error("feature-tenant-boundary-invalid", `Feature ${spec.name} declares an unsafe tenant field.`);
+  }
+  if (spec.requiredAdapters !== undefined) {
+    if (spec.requiredAdapters.length === 0 || spec.requiredAdapters.some((token) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(token))
+      || new Set(spec.requiredAdapters).size !== spec.requiredAdapters.length) {
+      error("feature-adapter-requirements-invalid",
+        `Feature ${spec.name} must declare unique, non-empty adapter token identifiers.`);
+    }
+  }
+  if (spec.requiredAdapterScopes !== undefined) {
+    if (spec.requiredAdapters === undefined
+      || Object.keys(spec.requiredAdapterScopes).some((token) => !spec.requiredAdapters?.includes(token))) {
+      error("feature-adapter-requirements-invalid",
+        `Feature ${spec.name} must scope only declared required adapters.`);
+    }
+  }
+  const databaseTransition = spec.transitions.some((transition) => transition.persistence?.boundary === "database");
+  if (databaseTransition && spec.database === undefined && spec.file !== undefined) {
+    error("feature-database-source-required",
+      `Database Feature ${spec.name} must declare its database source, table and rowType.`);
+  }
+  if (spec.database !== undefined) {
+    if (spec.database.source.startsWith("/") || spec.database.source.includes("\\")
+      || spec.database.source.split("/").includes("..")
+      || !/^[A-Za-z0-9._/-]+$/.test(spec.database.source)) {
+      error("feature-database-source-invalid", `Feature ${spec.name} declares an unsafe database source.`);
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/.test(spec.database.table)) {
+      error("feature-database-table-invalid", `Feature ${spec.name} must use a schema-qualified database table.`);
+    }
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(spec.database.rowType)) {
+      error("feature-database-row-type-invalid", `Feature ${spec.name} declares an unsafe database row type.`);
+    }
+  }
   const names = new Set<string>();
+  if (module && spec.requiredAdapters !== undefined) {
+    for (const token of spec.requiredAdapters) {
+      const provider = module.providers.find((candidate) =>
+        candidate.token === token || candidate.useClass === token);
+      if (!provider) {
+        error("feature-adapter-unresolved",
+          `Feature ${spec.name} requires adapter ${token}, but module ${module.name} does not register a provider for it.`);
+      } else {
+        const expectedScope = spec.requiredAdapterScopes?.[token];
+        if (expectedScope !== undefined && provider.scope !== expectedScope) {
+          error("feature-adapter-provider-scope",
+            `Feature ${spec.name} requires adapter ${token} to use ${expectedScope} scope, but module ${module.name} registers it with ${provider.scope} scope.`);
+        }
+      }
+    }
+  }
   for (const transition of spec.transitions) {
     if (!transition.name.trim() || names.has(transition.name)) {
       error("duplicate-feature-transition", `Feature ${spec.name} has duplicate/empty transition '${transition.name}'.`);
@@ -23,7 +86,67 @@ export function validateFeatureSpec(spec: FeatureSpecNode, module?: ModuleNode):
     if (transition.permission !== undefined && !transition.permission.trim()) {
       error("feature-governance-drift", `Transition ${transition.name} declares an empty permission.`);
     }
+    if (transition.invalidateTags !== undefined) {
+      if (transition.invalidateTags.length === 0
+        || transition.invalidateTags.some((tag) => !tag.trim())
+        || new Set(transition.invalidateTags).size !== transition.invalidateTags.length) {
+        error("feature-invalidation-tags-invalid", `Transition ${transition.name} must declare unique, non-empty invalidateTags.`);
+      }
+    }
+    if (transition.persistence) {
+      const persistence = transition.persistence;
+      if (persistence.boundary === "database" &&
+        (persistence.optimisticLock !== "required" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(persistence.versionField ?? "") ||
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(persistence.tenantField ?? "") ||
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(persistence.stateField ?? "") ||
+          new Set([persistence.tenantField, persistence.versionField, persistence.stateField]).size !== 3 ||
+          persistence.receipt !== "required" || persistence.reconciliation !== "none")) {
+        error("feature-persistence-invalid", `Database transition ${transition.name} requires distinct safe tenant/version/state fields, optimistic locking, and a receipt, without reconciliation.`);
+      }
+      if (persistence.boundary === "database" && spec.tenantField !== persistence.tenantField) {
+        error("feature-tenant-boundary-drift", `Database transition ${transition.name} tenant field must match Feature ${spec.name} tenantField.`);
+      }
+      if (persistence.boundary === "external" &&
+        (persistence.optimisticLock !== "none" || persistence.versionField !== undefined || persistence.tenantField !== undefined ||
+          persistence.stateField !== undefined ||
+          persistence.receipt !== "required" || persistence.reconciliation !== "required")) {
+        error("feature-persistence-invalid", `External transition ${transition.name} requires a receipt and reconciliation, without database optimistic locking.`);
+      }
+      if (persistence.boundary === "external" && !transition.job) {
+        error("feature-job-unresolved", `External transition ${transition.name} must bind a reconciliation Job.`);
+      }
+      if (!transition.command) {
+        error("feature-command-unresolved", `Persistent transition ${transition.name} must reference a command.`);
+      }
+      if (!transition.permission?.trim()) {
+        error("feature-governance-drift", `Persistent transition ${transition.name} must declare a permission.`);
+      }
+    }
     if (!module) continue;
+    if (transition.persistence !== undefined) {
+      for (const query of module.queries) {
+        const queryProvider = module.providers.find((provider) =>
+          provider.token === query.className || provider.useClass === query.className);
+        if (!queryProvider) {
+          error("feature-query-provider-unresolved",
+            `Feature query ${query.className} is not registered as a runtime provider in module ${module.name}.`);
+        } else if (queryProvider.scope !== "request") {
+          error("feature-query-provider-scope",
+            `Feature query ${query.className} must use request scope, but module ${module.name} registers it with ${queryProvider.scope} scope.`);
+        }
+        if (query.tenantScope !== "required") {
+          error("feature-query-tenant-boundary", `Query ${query.className} in Feature ${spec.name} must declare tenantScope: "required".`);
+        }
+        if (spec.readPermission !== undefined && query.permission !== spec.readPermission) {
+          error("feature-query-permission", `Query ${query.className} in Feature ${spec.name} must declare read permission '${spec.readPermission}'.`);
+        }
+      }
+      for (const job of module.jobs ?? []) {
+        if (job.tenantScope !== "required") {
+          error("feature-job-tenant-boundary", `Job ${job.className} in Feature ${spec.name} must declare tenantScope: "required".`);
+        }
+      }
+    }
     const commands = module.commands.filter((command) =>
       command.className === transition.command || command.name === transition.command);
     const command = commands[0];
@@ -34,9 +157,86 @@ export function validateFeatureSpec(spec: FeatureSpecNode, module?: ModuleNode):
       error("feature-command-unresolved", `Transition ${transition.name} declares governance without a command binding.`);
     }
     if (command) {
+      const commandProvider = module.providers.find((provider) =>
+        provider.token === command.className || provider.useClass === command.className);
+      if (!commandProvider) {
+        error("feature-command-provider-unresolved",
+          `Feature transition ${transition.name} references command ${command.className}, but the command is not registered as a provider in module ${module.name}.`);
+      } else if (commandProvider.scope !== "request") {
+        error("feature-command-provider-scope",
+          `Feature command ${command.className} must use request scope, but module ${module.name} registers it with ${commandProvider.scope} scope.`);
+      }
       for (const key of ["permission", "transaction", "idempotency", "audit"] as const) {
         if (transition[key] !== undefined && transition[key] !== command[key]) {
           error("feature-governance-drift", `Transition ${transition.name} ${key} differs from command ${command.className}.`);
+        }
+      }
+      if (transition.persistence) {
+        if (transition.persistence.boundary === "database" && command.transaction !== "required") {
+          error("feature-persistence-drift", `Database transition ${transition.name} requires command ${command.className} to declare transaction: "required".`);
+        }
+        if (command.tenantScope !== "required") {
+          error("feature-command-tenant-boundary", `Command ${command.className} in Feature ${spec.name} must declare tenantScope: "required".`);
+        }
+        if (transition.persistence.boundary === "external" && command.transaction !== "none") {
+          error("feature-persistence-drift", `External transition ${transition.name} requires command ${command.className} to declare transaction: "none".`);
+        }
+        if (command.idempotency !== "required" || !command.audit) {
+          error("feature-persistence-drift", `Persistent transition ${transition.name} requires command ${command.className} to declare idempotency and audit.`);
+        }
+      }
+    }
+    if (transition.job) {
+      const jobs = (module.jobs ?? []).filter((job) =>
+        job.className === transition.job || job.name === transition.job);
+      if (jobs.length !== 1) {
+        error("feature-job-unresolved", `Transition ${transition.name} must reference exactly one Job in module ${module.name}.`);
+      } else {
+        const job = jobs[0]!;
+        const jobProvider = module.providers.find((provider) =>
+          provider.token === job.className || provider.useClass === job.className);
+        if (!jobProvider) {
+          error("feature-job-provider-unresolved",
+            `Feature transition ${transition.name} references Job ${job.className}, but the Job is not registered as a runtime provider in module ${module.name}.`);
+        } else if (jobProvider.scope !== "job") {
+          error("feature-job-provider-scope",
+            `Feature Job ${job.className} must use job scope, but module ${module.name} registers it with ${jobProvider.scope} scope.`);
+        }
+        if (job.tenantScope !== "required") {
+          error("feature-job-tenant-boundary", `Job ${job.className} in Feature ${spec.name} must declare tenantScope: "required".`);
+        }
+        if (job.idempotency !== "required") {
+          error("feature-job-idempotency", `Job ${job.className} in Feature ${spec.name} must declare idempotency: "required".`);
+        }
+        if (job.mode === undefined) {
+          error("feature-job-mode", `Job ${job.className} in Feature ${spec.name} must declare mode: "task" or "workflow".`);
+        }
+        if (job.input === undefined || job.schemaKinds?.input !== "declared") {
+          error("feature-job-contract", `Job ${job.className} in Feature ${spec.name} must declare a non-opaque input schema.`);
+        }
+        const provider = module.providers.find((candidate) =>
+          candidate.token === job.className || candidate.useClass === job.className,
+        );
+        if (job.tenantScope === "required" && provider
+          && !provider.deps.some((token) => isJobContextToken(token))) {
+          error("feature-job-context", `Job ${job.className} in Feature ${spec.name} must inject JOB_CONTEXT for trusted tenant execution.`);
+        }
+      }
+    }
+    const declaredTags = module
+      ? new Set(module.controllers.flatMap((controller) =>
+        controller.routes.flatMap((route) => route.tags ?? [])))
+      : new Set<string>();
+    if (transition.persistence !== undefined && declaredTags.size > 0
+      && transition.invalidateTags === undefined) {
+      error("feature-invalidation-tags-required",
+        `Persistent transition ${transition.name} must declare invalidateTags when Feature ${spec.name} exposes query tags.`);
+    }
+    if (transition.invalidateTags !== undefined && declaredTags.size > 0) {
+      for (const tag of transition.invalidateTags) {
+        if (!declaredTags.has(tag)) {
+          error("feature-invalidation-tag-unresolved",
+            `Transition ${transition.name} invalidates '${tag}', but Feature ${spec.name} does not declare that query tag.`);
         }
       }
     }
@@ -45,8 +245,11 @@ export function validateFeatureSpec(spec: FeatureSpecNode, module?: ModuleNode):
         `${route.method} ${joinRoutePaths(controller.path, route.path)}` === transition.route));
       if (routes.length !== 1) {
         error("feature-route-unresolved", `Transition ${transition.name} must reference exactly one route '${transition.route}' in module ${module.name}.`);
-      } else if (command && routes[0].command !== command.className) {
+      } else if (command && transition.routeBinding !== "controller"
+        && routes[0]?.command !== command.className && routes[0]?.command !== command.name) {
         error("feature-route-drift", `Route ${transition.route} is not bound to ${command.className}.`);
+      } else if (transition.routeBinding === "controller" && routes[0]?.command !== undefined) {
+        error("feature-route-drift", `Controller-bound route ${transition.route} must not also declare a framework command binding.`);
       }
     }
   }
@@ -58,8 +261,6 @@ export function validateFeatureSpec(spec: FeatureSpecNode, module?: ModuleNode):
  * execute() fails closed until the application's persistence logic is supplied.
  */
 export function generateFeatureSource(spec: FeatureSpecNode): string {
-  const errors = validateFeatureSpec(spec);
-  if (errors.length) throw new Error(errors.map((error) => error.message).join("\n"));
   if (spec.transitions.some((transition) => !transition.permission)) {
     throw new Error("Spec-to-Code requires an explicit permission for every transition.");
   }
@@ -67,13 +268,27 @@ export function generateFeatureSource(spec: FeatureSpecNode): string {
     ...transition,
     command: `Transition${index + 1}Command`,
   }));
+  const errors = validateFeatureSpec({ ...spec, transitions });
+  if (errors.length) throw new Error(errors.map((error) => error.message).join("\n"));
   if (transitions.some((transition) => transition.route)) {
     throw new Error("Generate the command slice first; existing HTTP routes require explicit schema and handler implementations.");
   }
-  const sourceSpec = { name: spec.name, states: spec.states, transitions: Object.fromEntries(transitions.map((transition) => {
+  const sourceSpec = {
+    name: spec.name, states: spec.states,
+    ...(spec.database === undefined ? {} : { database: spec.database }),
+    tenantField: spec.tenantField ?? "tenant_id",
+    transitions: Object.fromEntries(transitions.map((transition) => {
     const { name, ...options } = transition;
-    return [name, options];
-  })) };
+    const persistence = transition.persistence ?? {
+      boundary: "database" as const, optimisticLock: "required" as const, versionField: "version",
+      tenantField: "tenant_id", stateField: "state", receipt: "required" as const, reconciliation: "none" as const,
+    };
+    return [name, {
+      ...options,
+      persistence,
+    }];
+    })),
+  };
   return [
     'import { Command, defineFeatureSlice, defineFeatureSpec } from "@supacloud/app";',
     "",
@@ -83,7 +298,10 @@ export function generateFeatureSource(spec: FeatureSpecNode): string {
     ...transitions.flatMap((transition) => [
       `@Command(${JSON.stringify({
         name: `${spec.name}.${transition.name}`, permission: transition.permission,
-        transaction: transition.transaction ?? "none", idempotency: transition.idempotency ?? "none", audit: transition.audit,
+        transaction: transition.transaction ?? (transition.persistence?.boundary === "external" ? "none" : "required"),
+        idempotency: transition.idempotency ?? "required",
+        audit: transition.audit ?? `${spec.name}.${transition.name}`,
+        tenantScope: "required",
       })})`,
       `export class ${transition.command} {`,
       `  execute(state: FeatureState): never {`,

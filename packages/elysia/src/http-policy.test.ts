@@ -1,3 +1,4 @@
+import type { CompiledRouteRegistrar } from "./index";
 import { testInvoker } from "./testing";
 import { expect, test } from "bun:test";
 import { Elysia, t } from "elysia";
@@ -10,6 +11,9 @@ function moduleWith(httpPolicies: unknown, calls: string[]): CompiledModule {
     createRequestScope: () => {
       calls.push("scope");
       return { controller: { run: () => { calls.push("handler"); return "ok"; } } };
+    },
+    registerRoutes(register: CompiledRouteRegistrar) {
+      register(this.controllers[0]!, this.controllers[0]!.routes[0]!, (this.controllers[0]!.path + "/" + this.controllers[0]!.routes[0]!.path).replace(/\/+/g, "/").replace(/\/$/, "") || "/");
     },
     controllers: [{
       path: "/items", scope: "request", serviceKey: "controller",

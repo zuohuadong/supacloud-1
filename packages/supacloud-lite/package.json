@@ -51,7 +51,7 @@
     "test:standalone:native": "bun run scripts/standalone-native-smoke.ts",
     "check:package": "node ../../.github/scripts/esm-package-policy.mjs --pack .",
     "prepack": "bun run build && bun run check:package",
-    "typecheck": "bun x tsc --noEmit -p tsconfig.json"
+    "typecheck": "bun check --no-script -p tsconfig.json"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.8",
@@ -62,15 +62,15 @@
     "@supacloud/db": "^0.6.0",
     "exact-mirror": "1.2.6",
     "tar": "^7.5.22",
-    "typebox": "1.3.34"
+    "typebox": "1.4.3"
   },
   "devDependencies": {
     "@supacloud/app": "file:../app",
     "@supacloud/compiler": "file:../compiler",
     "@supacloud/elysia": "file:../elysia",
     "@supabase/supabase-js": "^2.115.0",
-    "@types/bun": "^1.4.2",
-    "elysia": "2.0.0-rc.0",
+    "@types/bun": "^1.4.4",
+    "elysia": "2.0.0-rc.1",
     "jose": "^6.2.11",
     "typescript": "^7.0.2"
   },
@@ -85,7 +85,7 @@
     "@graphql-tools/utils": "^12.0.3"
   },
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.4"
   },
   "publishConfig": {
     "access": "public",

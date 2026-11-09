@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { checkElysiaCompatibility, parseLockfile } from './check-elysia-compatibility.mjs';
 
-const version = '2.0.0-beta.21';
+const version = '2.0.0-rc.1';
 const templates = [
   'packages/cli/src/shared/tools/advanced-tools.ts',
   'packages/cli/src/shared/tools/app-starter.ts',
@@ -26,7 +26,7 @@ function fixture(t) {
   };
   write('package.json', { private: true });
   write('packages/elysia/compatibility.json', {
-    bun: '1.4.2', packages: { elysia: version, typebox: '1.3.34', 'exact-mirror': '1.2.6' },
+    bun: '1.4.4', packages: { elysia: version, typebox: '1.3.34', 'exact-mirror': '1.2.6' },
   });
   for (const name of ['app', 'compiler']) {
     write(`packages/${name}/package.json`, { name: `@supacloud/${name}`, dependencies: { typebox: '1.3.34' } });
@@ -53,7 +53,7 @@ function fixture(t) {
   return { root, write, edit };
 }
 
-test('accepts consistent exact beta declarations without installing dependencies', (t) => {
+test('accepts consistent exact RC declarations without installing dependencies', (t) => {
   assert.deepEqual(checkElysiaCompatibility(fixture(t).root), []);
 });
 test('parses emitted trailing commas without rewriting strings or evaluating code', () => {
@@ -62,20 +62,20 @@ test('parses emitted trailing commas without rewriting strings or evaluating cod
   assert.deepEqual(parseLockfile(source), expected);
   assert.throws(() => parseLockfile('({ injected: process.exit() })'));
 });
-test('rejects a widened beta peer', (t) => {
+test('rejects a widened RC peer', (t) => {
   const f = fixture(t);
-  f.edit('packages/elysia/package.json', (p) => { p.peerDependencies.elysia = '>=2.0.0-beta.21 <3'; });
+  f.edit('packages/elysia/package.json', (p) => { p.peerDependencies.elysia = '>=2.0.0-rc.1 <3'; });
   assert.match(checkElysiaCompatibility(f.root).join('\n'), /peerDependencies\.elysia must equal/);
 });
 test('rejects stale adapter workspace lock metadata', (t) => {
   const f = fixture(t);
-  f.edit('packages/elysia/bun.lock', (p) => { p.workspaces[''].peerDependencies.elysia = '>=2.0.0-beta.21 <3'; });
+  f.edit('packages/elysia/bun.lock', (p) => { p.workspaces[''].peerDependencies.elysia = '>=2.0.0-rc.1 <3'; });
   assert.match(checkElysiaCompatibility(f.root).join('\n'), /stale workspace peerDependencies\.elysia/);
 });
 test('rejects stale copied adapter metadata in a consumer lockfile', (t) => {
   const f = fixture(t);
   f.edit('packages/supacloud-lite/bun.lock', (p) => {
-    p.packages['@supacloud/elysia'][1].peerDependencies.elysia = '>=2.0.0-beta.21 <3';
+    p.packages['@supacloud/elysia'][1].peerDependencies.elysia = '>=2.0.0-rc.1 <3';
   });
   assert.match(checkElysiaCompatibility(f.root).join('\n'), /stale local @supacloud\/elysia peer metadata/);
 });
@@ -113,8 +113,13 @@ test('rejects a legacy-only schema matrix and mismatched active schema declarati
 });
 test('rejects an unpinned compatibility target', (t) => {
   const f = fixture(t);
-  f.edit('packages/elysia/compatibility.json', (p) => { p.packages.elysia = '^2.0.0-beta.21'; });
-  assert.match(checkElysiaCompatibility(f.root).join('\n'), /exact Elysia 2\.0 beta version/);
+  f.edit('packages/elysia/compatibility.json', (p) => { p.packages.elysia = '^2.0.0-rc.1'; });
+  assert.match(checkElysiaCompatibility(f.root).join('\n'), /exact Elysia 2\.0 RC version/);
+});
+test('rejects a beta compatibility target after moving to RC', (t) => {
+  const f = fixture(t);
+  f.edit('packages/elysia/compatibility.json', (p) => { p.packages.elysia = '2.0.0-beta.21'; });
+  assert.match(checkElysiaCompatibility(f.root).join('\n'), /exact Elysia 2\.0 RC version/);
 });
 test('does not rewrite historical third-party adapter dependencies', (t) => {
   const f = fixture(t);

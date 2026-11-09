@@ -19,15 +19,20 @@ platform capabilities stay SupaCloud-native.
 > not a requirement to adopt its frontend framework. The goal is a constrained, diagnosable and
 > deliverable pipeline.
 
+See [Vibecoding Default Policy](vibecoding-default-policy.md) for the
+selection rule: when no special requirement exists, generators and AI use the
+validated best path; alternatives must be explicit and carry their own governance
+and verification obligations.
+
 ## Quick start
 
 ```bash
-supacloud-cli app init --root ./orders-api --name orders-api   # minimal; explicit recipes
+supacloud app init --root ./orders-api --name orders-api   # minimal; explicit recipes
 cd orders-api && bun install && bun run check
 
-supacloud context --format json > context.json   # AI reads the compiled project graph
-supacloud doctor --format json > doctor.json     # actionable diagnostics + fix plan
-supacloud fix --fix fix.json --write             # apply one DiagnosticFix, then recheck
+supacloud app context --format json > context.json   # AI reads the compiled project graph
+supacloud app doctor --format json > doctor.json     # actionable diagnostics + fix plan
+supacloud app fix --from-doctor doctor.json --fix-index 0  # preview one fix from the report
 ```
 
 ## Single entry point
@@ -36,23 +41,23 @@ Developers and AI use one CLI surface and do not need to remember the underlying
 packages:
 
 ```bash
-supacloud-cli app init        # minimal project; src/features/<feature>
-supacloud-cli app dev         # run the project's existing local dev script
-supacloud-cli app watch       # compiler-only watch
-supacloud-cli app verify-plan --target health  # focused tests, never a full-suite fallback
-supacloud generate ...        # generators
-supacloud check               # compiler governance checks
-supacloud context --format json
-supacloud doctor              # actionable health report
-supacloud fix --fix fix.json  # apply a DiagnosticFix (preview; --write to apply)
+supacloud app init        # minimal project; src/features/<feature>
+supacloud app dev         # run the project's existing local dev script
+supacloud app watch       # compiler-only watch
+supacloud app verify-plan --target health  # focused tests, never a full-suite fallback
+supacloud app generate ...        # generators
+supacloud app check               # compiler governance checks
+supacloud app context --format json
+supacloud app doctor              # actionable health report
+supacloud app fix --from-doctor doctor.json --fix-index 0  # preview a fix from doctor output
 supacloud deploy              # delivery
 ```
 
-The `app` namespace remains as the low-level form (`supacloud app <verb>`); the
-top-level verbs are aliases with the same implementation and execution policy.
+The `app` namespace is the only application-authoring surface. There are no
+top-level verb aliases; use `supacloud app <verb>` for every local action.
 
 > `app dev` delegates to `bun run dev` (watch, compile, restart).
-> `supacloud-cli dev ...` is the separate remote project
+> `supacloud dev ...` is the separate remote project
 > sync/watch/migrate module; they are different commands.
 
 ## Conventional project structure
@@ -77,7 +82,7 @@ Ordinary reads use the existing RLS-protected PostgREST client; GraphQL remains
 an opt-in contract pipeline and part of the explicit command reference.
 
 `generated/**` is produced by the compiler and is intentionally committed so
-`supacloud check` can detect drift. Never edit `generated/**` directly.
+`supacloud app check` can detect drift. Never edit `generated/**` directly.
 
 ## Generator-first
 
@@ -85,13 +90,24 @@ Common tasks have stable, re-runnable generators whose output is readable,
 editable and repeatable — never a black box:
 
 ```bash
-supacloud generate --kind module   --name orders
-supacloud generate --kind controller --module orders
-supacloud generate --kind command  --module orders --name accept
-supacloud generate --kind query    --module orders --name list
-supacloud generate --kind job      --module orders --name sync-orders
-supacloud generate --kind contract --module orders --name accept
+supacloud app generate --kind module   --name orders
+supacloud app generate --kind controller --module orders
+supacloud app generate --kind command  --module orders --name accept
+supacloud app generate --kind query    --module orders --name list
+supacloud app generate --kind job      --module orders --name sync-orders
+supacloud app generate --kind contract --module orders --name accept
+supacloud app generate --kind feature  --name case-approval --permission cases:approve --rpc approveCase \
+  --database-source db/schema.ts --database-table public.reviews --database-type ReviewRow
 ```
+
+The `feature` generator emits an approval slice with HTTP contracts, a query,
+a governed command, state declarations, an async job boundary, an HTTP route,
+fail-closed tests and a delivery checklist. Permission, durable RPC, database
+source, table and row type remain explicit inputs; the framework does not infer
+business authorization or database ownership. It does not create a second
+database model or fabricate database, identity or production receipts.
+Database version checks, authorization, transactions and the job host still need
+to be wired; generated tests are not database or E2E acceptance.
 
 ## Compiler does more of the reasoning
 
@@ -102,7 +118,7 @@ cross-layer references and unconfigured provider capabilities.
 
 ## AI-native context
 
-`supacloud context --format json` returns the compiled module graph, providers,
+`supacloud app context --format json` returns the compiled module graph, providers,
 routes/commands/jobs, diagnostics and the commands an agent should run. A
 `--target <name>` narrows the result to one module neighborhood. Targets may be
 module names/classes or owned provider, controller, command, job and query names.
@@ -110,7 +126,22 @@ The returned `subject` remains the canonical module name; ambiguous owners requi
 an explicit module target. Existing module queries keep the same version-1 shape.
 Agents read
 structured context instead of scanning the repository, and never receive
-credentials or live user data.
+credentials or live user data. `app check --format json` and `app doctor
+--format json` also return a `next` command list, so an agent can move from a
+failed check or preview-ready repair to the next verification step without
+inventing commands.
+
+Database changes use the same bounded-context rule:
+
+```bash
+supacloud db context --root . --module_file db/modules.ts --module cases
+supacloud db context --root . --module_file db/modules.ts --target public.case_create
+```
+
+The result identifies the ZModel structure source, SQL behavior source,
+object-specific tests and focused verification commands. Agents should edit
+maintained sources and add forward migrations; they should not scan full schema
+dumps, edit generated files, or rewrite applied migrations.
 
 ## Three golden paths
 
@@ -118,8 +149,8 @@ The minimal default precedes these opt-in recipes; it does not install all three
 New business metadata uses `@supacloud/app/core`, while the frontend continues to
 use `@supacloud/js` with its existing Supabase session and selected UI framework.
 
-Support a small number of stable paths first, each with a template, generator,
-example, tests and a deployment flow:
+Support a small number of stable paths first, each with a generator, example,
+tests and a deployment flow:
 
 1. **HTTP API** — controllers, route contracts and request/response validation.
 2. **Database transaction and Command** — durable authorization, idempotency,
@@ -147,10 +178,10 @@ does not bypass AST checks, grant write permission, or prove business correctnes
 An invalid policy is never automatically replaced with a weaker one.
 
 ```bash
-supacloud context --format json > context.json
-supacloud doctor --format json > doctor.json
-supacloud fix --fix fix.json          # preview
-supacloud fix --fix fix.json --write  # apply
+supacloud app context --format json > context.json
+supacloud app doctor --format json > doctor.json
+supacloud app fix --from-doctor doctor.json --fix-index 0          # preview
+supacloud app fix --from-doctor doctor.json --fix-index 0 --write  # apply after review
 ```
 
 ## Compatibility And Release

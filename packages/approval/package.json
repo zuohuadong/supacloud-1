@@ -7,24 +7,43 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./fa": { "types": "./dist/fa.d.ts", "import": "./dist/fa.js" },
-    "./durable": { "types": "./dist/durable.d.ts", "import": "./dist/durable.js" },
-    "./workbench": { "types": "./dist/workbench-http.d.ts", "import": "./dist/workbench-http.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./fa": {
+      "types": "./dist/fa.d.ts",
+      "import": "./dist/fa.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "import": "./dist/durable.js"
+    },
+    "./workbench": {
+      "types": "./dist/workbench-http.d.ts",
+      "import": "./dist/workbench-http.js"
+    }
   },
-  "files": ["dist", "sql", "web", "README.md", "NOTICE", "LICENSE-APACHE-2.0.txt"],
+  "files": [
+    "dist",
+    "sql",
+    "web",
+    "README.md",
+    "NOTICE",
+    "LICENSE-APACHE-2.0.txt"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "typecheck": "bun check --no-script -p tsconfig.json",
+    "typecheck:test": "bun check --no-script -p tsconfig.test.json",
     "test": "bun test tests/approval.test.ts"
   },
   "dependencies": {
-    "typebox": "1.3.34",
+    "typebox": "1.4.3",
     "xstate": "5.33.2"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   },
   "license": "Apache-2.0",

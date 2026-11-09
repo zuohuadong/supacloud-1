@@ -1,8 +1,6 @@
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
-import {
-  parseWorkerExecutionGroup, workerShardForKey, workerShardQueue, type WorkerExecutionGroup,
-} from "@supacloud/delivery/worker-execution";
+import { parseWorkerExecutionGroup, type WorkerExecutionGroup } from "@supacloud/delivery/worker-execution";
 import {
   createExecutionGroupWorker, workerEnvelope, admitWorkerOperation, releaseWorkerOperation,
   type WorkerTransaction,
@@ -86,9 +84,8 @@ export function createReportExport(options: {
       if (rows.length !== 1 || rows[0].project_ref !== projectRef
         || rows[0].max_outstanding !== policy.admission.maxOutstandingOperations) throw new Error("REPORT_EXPORT_BINDING_INVALID");
       // Queue existence and read/settlement grants are additionally checked by the engine.
-      const queues = Array.from({ length: policy.shardCount ?? 1 }, (_, shard) => workerShardQueue(policy, shard));
-      await database`SELECT queue_name FROM pgmq.list_queues() WHERE queue_name = ANY(${queues})`.then(rows => {
-        if (rows.length !== queues.length) throw new Error("REPORT_EXPORT_QUEUE_MISSING");
+      await database`SELECT queue_name FROM pgmq.list_queues() WHERE queue_name=${policy.queue}`.then(rows => {
+        if (rows.length !== 1) throw new Error("REPORT_EXPORT_QUEUE_MISSING");
       });
     },
     async probe(signal) {
@@ -159,10 +156,8 @@ export function createReportExport(options: {
             (operation_id,actor_id,tenant_id,source_id,revision,group_name)
             VALUES (${operationId}::uuid,${identity.actorId},${identity.tenantId},${source.sourceId},${source.revision},${group.name})`;
           // PGMQ is in this database: enqueue and intent commit atomically, with no second dispatcher.
-          const orderingKey = operationId;
-          const shard = workerShardForKey(group, orderingKey);
-          await connection`SELECT pgmq.send(${workerShardQueue(group, shard)},
-            ${workerEnvelope(group, options.projectRef, operationId, { requestId: operationId }, orderingKey)}::jsonb)`;
+          await connection`SELECT pgmq.send(${group.queue},
+            ${workerEnvelope(group, options.projectRef, operationId, { requestId: operationId })}::jsonb)`;
         }
         const row = await request(operationId, connection);
         if (row.actor_id !== identity.actorId || row.tenant_id !== identity.tenantId) throw new Error("REPORT_EXPORT_FORBIDDEN");

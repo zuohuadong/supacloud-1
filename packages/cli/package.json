@@ -1,11 +1,12 @@
 {
   "name": "@supacloud/cli",
-  "version": "0.69.1",
+  "version": "0.115.4",
   "description": "Project-scoped CLI for SupaCloud users",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "supacloud-cli": "dist/index.js"
+    "supacloud-cli": "dist/index.js",
+    "supacloud": "dist/index.js"
   },
   "files": [
     "NOTICE",
@@ -16,10 +17,15 @@
   ],
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target node --conditions=supacloud-source",
-    "pretypecheck": "bun install --cwd ../delivery --frozen-lockfile && bun install --cwd ../compiler --frozen-lockfile && bun run --cwd ../compiler build && bun install --frozen-lockfile",
-    "prepublishOnly": "bun run build",
-    "typecheck": "tsc --noEmit"
+    "build": "bun build src/index.ts --outdir dist --target node --conditions=supacloud-source --external @supacloud/compiler --external @supacloud/db && bun run build:tool-runtime && bun run build:types",
+    "pretypecheck": "bun install --cwd ../delivery --frozen-lockfile && bun install --cwd ../compiler --frozen-lockfile && bun run --cwd ../compiler build && bun run prepare:db",
+    "prepublishOnly": "bun run build && bun run check:release-bundle",
+    "typecheck": "tsc --noEmit",
+    "check:release-bundle": "bun scripts/check-release-bundle.mjs",
+    "prepare:db": "bun install --cwd ../contracts --frozen-lockfile && bun run --cwd ../contracts build && bun install --cwd ../db --force --frozen-lockfile && bun run --cwd ../db build && bun install --force --frozen-lockfile",
+    "prebuild": "bun run prepare:db",
+    "build:tool-runtime": "bun build src/tool-runtime.ts --outdir dist --target node --external typebox && tsc -p tsconfig.tool-runtime.json --emitDeclarationOnly",
+    "build:types": "tsc --emitDeclarationOnly"
   },
   "keywords": [
     "supacloud",
@@ -34,20 +40,36 @@
     "directory": "packages/cli"
   },
   "dependencies": {
-    "@supacloud/compiler": "^0.39.0",
+    "@supacloud/compiler": "file:../compiler",
     "@supacloud/delivery": "file:../delivery",
-    "@supacloud/db": "^0.2.0",
+    "@supacloud/db": "file:../db",
     "fflate": "^0.8.3",
-    "typebox": "1.3.34"
+    "typebox": "1.4.3"
   },
   "overrides": {
     "@supacloud/delivery": "file:../delivery",
-    "@graphql-tools/utils": "^12.0.3"
+    "@graphql-tools/utils": "^12.0.4",
+    "@supacloud/contracts": "file:../contracts"
   },
   "devDependencies": {
-    "@supacloud/elysia": "^0.23.1",
-    "@types/bun": "^1.4.2",
-    "elysia": "2.0.0-rc.0",
-    "typescript": "^7.0.2"
+    "@supacloud/elysia": "file:../elysia",
+    "@types/bun": "^1.4.4",
+    "elysia": "2.0.0-rc.1",
+    "typescript": "^7.0.2",
+    "effect": "4.0.5",
+    "@supabase/supabase-js": "2.118.0"
+  },
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./tool-runtime": {
+      "types": "./dist/tool-runtime.d.ts",
+      "import": "./dist/tool-runtime.js",
+      "default": "./dist/tool-runtime.js"
+    }
   }
 }

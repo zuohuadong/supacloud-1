@@ -2,6 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
+import type { ApplicationDeployRequest } from "@supacloud/delivery";
+import { ApplicationActivationHistorySchema, parseApplicationActivationHistory } from "@supacloud/delivery";
+import { parseApplicationDeployPlan } from "@supacloud/delivery";
+import { formatDeploymentEvidence, parseDeploymentEvidence } from "@supacloud/delivery";
+import { parseApplicationReleaseTransferPlan, parseApplicationReleaseTransferResult, parseApplicationPromotionPlan } from "@supacloud/delivery";
 import {
     applyDiagnosticFix,
     buildDeliveryProject,
@@ -9,39 +15,69 @@ import {
     compileProject,
     compileOptionsFromConfig,
     createContextPack,
+    createExecutionContextPack,
     createDiagnosticRepairPlan,
     doctorProject,
     loadSupacloudConfig,
     formatDeliveryPlan,
     planDeliveryProject,
     resolveSupacloudConfig,
+    readExecutionMetadata,
     watchProject,
     type Diagnostic,
     type ModuleNode,
 } from "@supacloud/compiler";
-import { optional, parseToolArguments, stringEnum, withDescription } from "../schema";
+import { optional, stringEnum, validateToolArguments, withDescription } from "../schema";
 import type { ToolSchema } from "../schema";
+import { registerTool, type ToolServer } from "../tool-server";
 import { buildToolDefinitions, type AppManifest } from "./app-tool-export";
 import { initializeAppProject } from "./app-starter";
 import { checkAppDatabaseSources } from "./app-database-check";
 import { APPLICATION_TOOL_SCHEMA } from "./application-tools";
+import { ApplicationConfigurationIdSchema, ApplicationIdSchema } from "./application-schemas";
+import { parseApplicationConfigurationWrite } from "@supacloud/delivery";
+import { RELEASE_CONTROL_RESPONSE_SCHEMA, releaseControlFailure, releaseControlSuccess } from "./release-control-response";
+import {
+    ApplicationPromotionResultSchema, parsePreviewReceipt, parsePreviewList, parsePromotionStatus,
+} from "./application-workflow-schemas";
 import { resourceScaffold } from "./app-resource";
+import { featureScaffold } from "./app-feature";
 import { runLocalDevelopment } from "./app-local-dev";
 import { createVerificationPlan } from "./app-verification-plan";
 import { applyScaffoldWrites, planScaffoldWrites, scaffoldPath, ScaffoldError, type ScaffoldWrite } from "./app-scaffold-writes";
 
 const REMOTE_APP_ACTIONS = {
     upload: "upload_release",
+    "transfer-plan": "get_release_transfer_plan",
+    "promote-plan": "get_promotion_plan",
+    "promote-status": "get_promotion_status",
+    "promote-reconcile": "reconcile_promotion",
+    "preview-plan": "get_preview_plan",
+    "preview-list": "list_previews",
+    "preview-create": "create_preview",
+    "preview-status": "get_preview",
+    "preview-cleanup": "cleanup_preview",
+    transfer: "transfer_release",
     configure: "put_configuration",
-    deploy: "activate_release",
+    deploy: "deploy_release",
+    "deploy-plan": "get_deploy_plan",
+    diff: "get_deploy_plan",
     status: "get_runtime",
-    rollback: "activate_release",
+    evidence: "get_deployment_evidence",
+    rollback: "rollback_release",
+    "rollback-plan": "get_rollback_snapshot",
+    history: "get_history",
     reconcile: "reconcile_activation",
     retire: "retire_activation",
+    logs: "logs",
+    preview: "create_preview",
+    previews: "list_previews",
+    "preview-reconcile": "reconcile_preview",
 } as const;
 
 export interface AppToolOptions {
     getApplications?: () => ((args: Record<string, unknown>) => Promise<ToolResult>) | undefined;
+    projectDeployment?: (args: Record<string, unknown>) => Promise<ToolResult>;
     projectRef?: string;
     /** Abort signal for long-running local actions (`app dev` watch), used for cancellation and tests. */
     signal?: AbortSignal;
@@ -50,35 +86,42 @@ export interface AppToolOptions {
 }
 
 const REMOTE_APP_DESCRIPTIONS: Record<string, string> = {
-    ref: "[upload/configure/deploy/status/rollback/reconcile/retire] Project ref (defaults to context)",
-    id: "[upload/configure/deploy/status/rollback/reconcile/retire] Application ID",
-    environment_id: "[configure/deploy/status/rollback/reconcile/retire] Environment ID",
-    configuration_id: "[deploy/rollback] Required immutable configuration revision",
+    ref: "[release/upload/configure/transfer-plan/transfer/promote-plan/diff/promote/promote-status/promote-reconcile/preview-plan/preview/previews/preview-list/preview-create/preview-status/preview-reconcile/preview-cleanup/deploy/deploy-plan/status/rollback/rollback-plan/history/reconcile/retire] Project ref (defaults to context)",
+    id: "[release/upload/configure/transfer-plan/transfer/promote-plan/diff/promote/promote-status/promote-reconcile/preview-plan/preview/previews/preview-list/preview-create/preview-status/preview-reconcile/preview-cleanup/deploy/deploy-plan/status/rollback/rollback-plan/history/reconcile/retire] Application ID",
+    environment_id: "[release/configure/promote-plan/diff/promote/promote-status/promote-reconcile/preview-plan/preview/previews/preview-list/preview-create/preview-status/preview-reconcile/preview-cleanup/deploy/deploy-plan/status/rollback/rollback-plan/history/reconcile/retire] Target environment ID",
+    configuration_id: "[release/promote-plan/diff/promote/preview-plan/preview/preview-create/deploy/deploy-plan/rollback] Immutable target configuration revision",
     activation_id: "[deploy/rollback/reconcile/retire] Required explicit activation ID",
     expected_activation_id: "[deploy/rollback] Required current activation ID, or absent for first activation",
-    configuration_path: "[configure] Configuration write JSON including revision and expected revision",
-    manifest_path: "[upload] Local delivery.manifest.json",
-    release_id: "[deploy/rollback/reconcile] Required immutable application release ID",
+    configuration_path: "[release/configure] Configuration write JSON including revision and expected revision",
+    manifest_path: "[release/upload] Local delivery.manifest.json",
+    release_id: "[preview-plan/preview/preview-create/deploy/deploy-plan/diff/rollback/reconcile] Required immutable application release ID",
+    source_ref: "[transfer-plan/transfer/promote-plan/diff/promote] Source project ref",
+    source_release_id: "[transfer-plan/transfer/promote-plan/diff/promote] Source immutable release ID",
+    source_environment_id: "[promote-plan/diff/promote] Source environment ID",
+    mutation_id: "[promote-status/promote-reconcile] Stable promotion mutation ID",
+    approved_migration_digest: "[promote] Exact reviewed migration execution-plan digest",
+    web_release: "[release] Immutable staged Web release uploaded by the deploy profile",
+    branch_ref: "[preview-plan] Preview branch identity",
+    branch_name: "[preview/preview-create] Human-readable preview branch name",
+    data_mode: "[preview-plan/preview/preview-create] schema_only or full_clone",
+    ttl_seconds: "[preview-plan/preview/preview-create] Lifetime from 300 to 604800 seconds; creation defaults to the platform TTL",
+    wait: "[preview/preview-create/preview-status] Wait for verified readiness of the selected preview",
+    timeout_seconds: "[preview/preview-create/preview-status] Observation budget with --wait, from 1 to 3600 seconds (default 300)",
+    preview_id: "[preview-status/preview-reconcile/preview-cleanup] Preview ID",
+    cursor: "[history] Returned page cursor",
+    limit: "[history] Page size, default 20 (1-100)",
 };
 
-const REMOTE_APP_SCHEMA: ToolSchema = Object.fromEntries(
-    Object.entries(APPLICATION_TOOL_SCHEMA)
-        .filter(([name]) => name !== "action")
-        .map(([name, schema]) => [name, optional(schema, REMOTE_APP_DESCRIPTIONS[name])]),
-);
-
-type ToolServer = {
-    tool: (
-        name: string,
-        description: string,
-        schema: ToolSchema,
-        callback: (requestArguments: AppToolArguments) => Promise<unknown>,
-    ) => void;
-};
+const { action: _remoteAction, plan: _remotePlan, ...remoteFields } = APPLICATION_TOOL_SCHEMA;
+const REMOTE_APP_SCHEMA = Type.Partial(Type.Object(remoteFields)).properties;
+for (const [name, schema] of Object.entries(REMOTE_APP_SCHEMA)) {
+    const description = REMOTE_APP_DESCRIPTIONS[name];
+    if (description !== undefined) Object.assign(schema, { description });
+}
 
 export interface AppToolArguments {
     action: "init" | "generate" | "dev" | "watch" | "verify-plan" | "compile" | "check" | "graph" | "explain" | "export-tools" | "context" | "doctor" | "fix"
-        | "plan" | "build" | keyof typeof REMOTE_APP_ACTIONS;
+        | "plan" | "build" | "release" | "promote" | keyof typeof REMOTE_APP_ACTIONS;
     ref?: string;
     id?: string;
     environment_id?: string;
@@ -87,11 +130,34 @@ export interface AppToolArguments {
     expected_activation_id?: string | null;
     configuration_path?: string;
     manifest_path?: string;
+    /** `app release`: reuse an existing configuration revision instead of writing configuration_path. */
+    skip_build?: boolean;
     release_id?: string;
-    kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource";
-    template?: "minimal" | "http" | "command" | "edge";
+    source_ref?: string;
+    source_release_id?: string;
+    source_environment_id?: string;
+    mutation_id?: string;
+    approved_migration_digest?: string;
+    web_release?: ApplicationDeployRequest["web_release"];
+    branch_ref?: string;
+    branch_name?: string;
+    data_mode?: "schema_only" | "full_clone";
+    preview_id?: string;
+    cursor?: string;
+    limit?: number;
+    ttl_seconds?: number;
+    wait?: boolean;
+    timeout_seconds?: number;
+    kind?: "module" | "command" | "query" | "controller" | "job" | "contract" | "resource" | "feature";
+    template?: "minimal" | "http" | "command" | "edge" | "model-command";
     name?: string;
     module?: string;
+    permission?: string;
+    read_permission?: string;
+    rpc?: string;
+    database_source?: string;
+    database_table?: string;
+    database_type?: string;
     dir?: string;
     force?: boolean;
     dry_run?: boolean;
@@ -105,6 +171,8 @@ export interface AppToolArguments {
     format?: "text" | "json";
     target?: string;
     fix?: string;
+    from_doctor?: string;
+    fix_index?: number;
     write?: boolean;
     /** `app dev` local profile. `fast` is local/ephemeral; `integration` requires an explicit database URL. */
     profile?: "fast" | "integration";
@@ -115,20 +183,47 @@ export interface AppToolArguments {
     /** Integration dev verifies an explicit loopback database before running dev:integration. */
     database_url?: string;
     "database-url"?: string;
+    offset?: number;
+    service?: string;
+    search?: string;
+    start?: string;
+    end?: string;
+    /** `app context`: bounded JSON envelope or generated execution JSON-lines file. */
+    events?: string;
+    /** `app context`: exact opaque request ID to correlate from events. */
+    request_id?: string;
 }
 
 async function initProject(args: AppToolArguments): Promise<ToolResult> {
     if (args.force) throw new Error("app init never overwrites files; choose an empty directory");
     const template = args.template ?? "minimal";
     const { root, name, files } = await initializeAppProject({ root: args.root, name: args.name, template });
+    const next = [
+        "bun install",
+        ...(template !== "minimal" ? ["bun run db:generate"] : []),
+        ...(template === "model-command" ? ["bun run compile"] : []),
+        "bun run check",
+        ...(template === "model-command" ? ["# Follow README.md: apply reviewed local migrations, provision the application role and configure IdentityAuthority before dev."] : []),
+        "bun run dev",
+    ];
+    const note = template === "model-command"
+        ? "Requires an explicitly selected database, reviewed migrations and trusted HTTP/worker identity authority; see README.md."
+        : "Local demo only. Production requires persistent governance and identity adapters; see README.md.";
+    if (args.format === "json") return textResult(JSON.stringify({
+        version: 1,
+        ok: true,
+        root,
+        name,
+        template,
+        files,
+        next,
+        note,
+    }, null, 2));
     return textResult([
         `Initialized ${name} in ${root} (${files.length} files, template: ${template}).`,
         `cd '${root.replaceAll("'", "'\\''")}'`,
-        "bun install",
-        ...(template === "command" ? ["bun run db:generate"] : []),
-        "bun run check",
-        "bun run dev",
-        "Local demo only. Production requires persistent governance and identity adapters; see README.md.",
+        ...next,
+        note,
     ].join("\n"));
 }
 
@@ -166,6 +261,20 @@ function requireIdentifier(value: string | undefined, flag: string): string {
     return trimmed;
 }
 
+function requireFeatureCapability(value: string | undefined, flag: string): string {
+    if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(value)) {
+        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", `feature requires an explicit valid --${flag}; capabilities are not inferred`);
+    }
+    return value;
+}
+
+function requireFeatureDatabase(value: string | undefined, flag: string, pattern: RegExp): string {
+    if (typeof value !== "string" || !pattern.test(value)) {
+        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", `feature requires an explicit valid --${flag}`);
+    }
+    return value;
+}
+
 function moduleScaffold(name: string): string {
     return `import { Module } from "@supacloud/app";
 
@@ -185,6 +294,9 @@ function commandScaffold(moduleName: string, name: string): string {
 @Command({
     name: ${JSON.stringify(`${moduleName}.${camelName(name)}`)},
     permission: ${JSON.stringify(`${moduleName}.${camelName(name)}`)},
+    transaction: "required",
+    audit: ${JSON.stringify(`${moduleName}.${camelName(name)}.completed`)},
+    idempotency: "required",
 })
 export class ${pascalName(name)}Command {
     execute(): void {
@@ -244,8 +356,8 @@ export const ${prefix}Response = t.Object({});
 
 async function generateScaffold(args: AppToolArguments): Promise<ToolResult> {
     const kind = args.kind;
-    if (!kind || !["module", "command", "query", "controller", "job", "contract", "resource"].includes(kind)) {
-        throw new ScaffoldError("SCAFFOLD_KIND_INVALID", "app generate requires --kind (module|command|query|controller|job|contract|resource)");
+    if (!kind || !["module", "command", "query", "controller", "job", "contract", "resource", "feature"].includes(kind)) {
+        throw new ScaffoldError("SCAFFOLD_KIND_INVALID", "app generate requires --kind (module|command|query|controller|job|contract|resource|feature)");
     }
     for (const flag of ["dry_run", "force"] as const) {
         if (args[flag] !== undefined && typeof args[flag] !== "boolean") {
@@ -255,22 +367,48 @@ async function generateScaffold(args: AppToolArguments): Promise<ToolResult> {
     const root = resolve(args.root || process.cwd());
     const dir = args.dir ?? "src/features";
     if (dir !== ".") scaffoldPath(root, dir);
-    if (args.register_in !== undefined && kind !== "resource" && kind !== "module") {
-        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--register-in is only supported for a new module or resource");
+    if (args.register_in !== undefined && kind !== "resource" && kind !== "module" && kind !== "feature") {
+        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--register-in is only supported for a new module, resource or feature");
     }
-    if (kind === "resource" && (args.force || args.module !== undefined)) {
-        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "resource creates its own module; use --name and optionally --register-in, never --force or --module");
+    if ((kind === "resource" || kind === "feature") && (args.force || args.module !== undefined)) {
+        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", `${kind} creates its own module; use --name and optionally --register-in, never --force or --module`);
     }
+    if (kind !== "feature" && (args.permission !== undefined || args.read_permission !== undefined || args.rpc !== undefined)) {
+        throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--permission, --read-permission and --rpc are only supported for feature generation");
+    }
+    const featureGovernance = kind === "feature" ? {
+        permission: requireFeatureCapability(args.permission, "permission"),
+        readPermission: requireFeatureCapability(args.read_permission, "read-permission"),
+        rpc: requireFeatureCapability(args.rpc, "rpc"),
+        database: {
+            source: requireFeatureDatabase(args.database_source, "database-source",
+                /^(?!\/)(?!.*\\)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/),
+            table: requireFeatureDatabase(args.database_table, "database-table",
+                /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/),
+            rowType: requireFeatureDatabase(args.database_type, "database-type",
+                /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/),
+        },
+    } : undefined;
     const writes: ScaffoldWrite[] = [];
     let modulePath: string | undefined;
     let moduleSymbol: string | undefined;
     let contractName: string | undefined;
-    if (kind === "module" || kind === "resource") {
+    if (kind === "module" || kind === "resource" || kind === "feature") {
         const name = requireIdentifier(args.name, "name");
-        modulePath = join(dir, name, `${name}.module.ts`).replaceAll("\\", "/");
-        moduleSymbol = `${pascalName(name)}Module`;
+        modulePath = join(dir, name, kind === "feature" ? `${name}.feature.ts` : `${name}.module.ts`).replaceAll("\\", "/");
+        moduleSymbol = kind === "feature" ? `${pascalName(name)}Feature` : `${pascalName(name)}Module`;
         if (kind === "module") writes.push({ path: modulePath, content: moduleScaffold(name), overwrite: args.force === true });
-        else for (const [file, content] of Object.entries(resourceScaffold(name, pascalName(name)))) {
+        else for (const [file, content] of Object.entries(kind === "feature"
+            ? featureScaffold(name, pascalName(name), {
+                ...featureGovernance!,
+                databaseImportPath: (() => {
+                    const source = relative(join(root, dir, name), join(root, featureGovernance!.database.source))
+                        .replaceAll("\\", "/")
+                        .replace(/\.(?:[cm]?tsx?|mts|cts)$/, "");
+                    return source.startsWith(".") ? source : `./${source}`;
+                })(),
+            })
+            : resourceScaffold(name, pascalName(name)))) {
             writes.push({ path: join(dir, name, file).replaceAll("\\", "/"), content });
         }
     } else {
@@ -324,6 +462,11 @@ async function generateScaffold(args: AppToolArguments): Promise<ToolResult> {
         "Service and controller are registered in the generated module. No root module is guessed.",
         "Use --register-in <module.ts> to add an explicit parent import. Implement the read port before exposing the resource.",
         "Run app compile, app check --format json and your tests. No writes, permissions or persistence are inferred.",
+    );
+    if (kind === "feature") lines.push(
+        `Approval feature scaffold ${args.dry_run ? "planned" : "created"}; no database, authorization or job adapter is fabricated.`,
+        "Bind the explicit RPC in compiler capabilities and runtime governance. Review the generated delivery checklist.",
+        "Generate the client through app compile; no handwritten transport or database schema is created.",
     );
     if (contractName) {
         const prefix = pascalName(contractName);
@@ -402,25 +545,48 @@ interface ProjectContextPack {
     modules: ModuleNode[];
     externalTokens: string[];
     diagnostics: Diagnostic[];
-    allowedDependencies: { dependencies: string[]; devDependencies: string[] };
+    allowedDependencies: {
+        dependencies: string[];
+        devDependencies: string[];
+        optionalDependencies: string[];
+        peerDependencies: string[];
+    };
     commands: Record<string, string>;
+    defaults: {
+        readTransport: "postgrest-supabase-js";
+        writeTransport: "command-rpc";
+        writeRetry: "disabled";
+        externalOutcome: "receipt-reconcile";
+        databaseSource: "zmodel-append-only";
+    };
 }
 
 /** Declared package dependencies, so an agent can tell allowed imports from new packages. */
-async function readAllowedDependencies(root: string): Promise<{ dependencies: string[]; devDependencies: string[] }> {
+async function readAllowedDependencies(root: string): Promise<{
+    dependencies: string[];
+    devDependencies: string[];
+    optionalDependencies: string[];
+    peerDependencies: string[];
+}> {
     const path = join(root, "package.json");
-    if (!existsSync(path)) return { dependencies: [], devDependencies: [] };
+    if (!existsSync(path)) {
+        return { dependencies: [], devDependencies: [], optionalDependencies: [], peerDependencies: [] };
+    }
     try {
         const parsed = JSON.parse(await readFile(path, "utf8")) as {
             dependencies?: Record<string, string>;
             devDependencies?: Record<string, string>;
+            optionalDependencies?: Record<string, string>;
+            peerDependencies?: Record<string, string>;
         };
         return {
             dependencies: Object.keys(parsed.dependencies ?? {}).sort(),
             devDependencies: Object.keys(parsed.devDependencies ?? {}).sort(),
+            optionalDependencies: Object.keys(parsed.optionalDependencies ?? {}).sort(),
+            peerDependencies: Object.keys(parsed.peerDependencies ?? {}).sort(),
         };
     } catch {
-        return { dependencies: [], devDependencies: [] };
+        return { dependencies: [], devDependencies: [], optionalDependencies: [], peerDependencies: [] };
     }
 }
 
@@ -447,11 +613,54 @@ function formatModuleContextPack(pack: ReturnType<typeof createContextPack>): st
  * `--target <name>` resolves a module or owned symbol to its module neighborhood.
  */
 async function runContext(args: AppToolArguments): Promise<ToolResult> {
-    const { root, configFile, outDir, result } = await projectCompileConfig(args);
+    const { root, sourceDir, configFile, outDir, result } = await projectCompileConfig(args);
     const subject = args.target?.trim();
     if (subject) {
         const pack = createContextPack({ ...result.graph, diagnostics: result.diagnostics }, subject);
-        return textResult(args.format === "json" ? JSON.stringify(pack, null, 2) : formatModuleContextPack(pack));
+        const execution = args.events === undefined ? undefined : createExecutionContextPack(
+            { ...result.graph, diagnostics: result.diagnostics },
+            subject,
+            await readExecutionMetadata(resolve(root, args.events)),
+            args.request_id!,
+        );
+        const verification = await createVerificationPlan(root, result.graph, pack.subject, sourceDir);
+        const repairs = createDiagnosticRepairPlan(pack.diagnostics);
+        const workflow = {
+            root,
+            sourceRoot: sourceDir,
+            generatedDir: outDir,
+            allowedDependencies: await readAllowedDependencies(root),
+            editFiles: verification.files,
+            referenceFiles: pack.files,
+            verification,
+            repairs,
+            rules: {
+                generatedFiles: "do-not-edit",
+                permissions: "explicit-business-input-required",
+                writeRetry: "disabled",
+                fixDefault: "preview",
+            },
+            daily: [
+                ["supacloud", "app", "doctor", "--target", pack.subject, "--format", "json"],
+                ["supacloud", "app", "fix", "--fix", "<reviewed-fix.json>"],
+                ["supacloud", "app", "compile"],
+                ...verification.commands,
+            ],
+            release: {
+                first: ["supacloud", "app", "check", "--format", "json"],
+                rule: "Check committed artifacts before any regeneration; never repair drift to make this gate pass",
+                additionalEvidence: verification.releaseOnly,
+            },
+            executed: false,
+        };
+        return textResult(args.format === "json" ? JSON.stringify({ ...pack, ...(execution ? { execution } : {}), workflow }, null, 2) : [
+            formatModuleContextPack(pack),
+            `  edit files (project-relative): ${workflow.editFiles.join(", ") || "-"}`,
+            `  focused tests: ${verification.tests.join(", ") || "-"}`,
+            ...verification.manual.map(item => `  manual: ${item}`),
+            "  fixes: preview first; business policy requires explicit input",
+            "  release: app check before regeneration; local tests do not prove deployment",
+        ].join("\n"));
     }
     const project: ProjectContextPack = {
         version: 1,
@@ -471,6 +680,13 @@ async function runContext(args: AppToolArguments): Promise<ToolResult> {
             graph: "supacloud app graph --format json",
             explain: "supacloud app explain --target <name>",
         },
+        defaults: {
+            readTransport: "postgrest-supabase-js",
+            writeTransport: "command-rpc",
+            writeRetry: "disabled",
+            externalOutcome: "receipt-reconcile",
+            databaseSource: "zmodel-append-only",
+        },
     };
     if (args.format === "json") return textResult(JSON.stringify(project, null, 2));
     return textResult([
@@ -480,15 +696,18 @@ async function runContext(args: AppToolArguments): Promise<ToolResult> {
         `  modules: ${project.modules.map((module) => module.name).join(", ") || "-"}`,
         `  external tokens: ${project.externalTokens.join(", ") || "-"}`,
         `  dependencies: ${project.allowedDependencies.dependencies.join(", ") || "-"}`,
+        `  dev dependencies: ${project.allowedDependencies.devDependencies.join(", ") || "-"}`,
+        `  optional dependencies: ${project.allowedDependencies.optionalDependencies.join(", ") || "-"}`,
+        `  peer dependencies: ${project.allowedDependencies.peerDependencies.join(", ") || "-"}`,
         ...project.diagnostics.map(formatDiagnostic),
     ].join("\n"));
 }
 
 function doctorFixPlan(doctor: ReturnType<typeof doctorProject>) {
     return createDiagnosticRepairPlan(doctor.diagnostics ?? [])
-        .map((repair) => ({
+        .map((repair, index) => ({
             ...repair,
-            command: "supacloud app fix --fix <fix.json>",
+            command: `supacloud app fix --from-doctor <doctor.json> --fix-index ${index}`,
         }));
 }
 
@@ -542,8 +761,12 @@ async function findUnwiredContracts(rootDir: string): Promise<UnwiredContract[]>
 
 async function runDoctor(args: AppToolArguments): Promise<ToolResult> {
     const { root, outDir, result } = await projectCompileConfig(args);
-    const doctor = doctorProject(root, outDir, result.graph, result.upToDate, result.diagnostics);
-    const database = checkAppDatabaseSources(root);
+    const target = args.target?.trim();
+    const context = target ? createContextPack({ ...result.graph, diagnostics: result.diagnostics }, target) : undefined;
+    const doctor = doctorProject(root, outDir,
+        { ...result.graph, ...(context ? { modules: context.modules } : {}), diagnostics: [] },
+        result.upToDate, context?.diagnostics ?? result.diagnostics);
+    const database = context ? null : checkAppDatabaseSources(root);
     if (database) {
         doctor.checks.push(database);
         if (!database.ok) doctor.errors += 1;
@@ -552,14 +775,29 @@ async function runDoctor(args: AppToolArguments): Promise<ToolResult> {
     const autoFixable = fixPlan.filter((repair) => repair.readiness === "preview").length;
     const inputRequired = fixPlan.filter((repair) => repair.readiness === "input-required").length;
     const manualFixes = fixPlan.filter((repair) => repair.readiness === "manual").length;
-    const unwiredContracts = await findUnwiredContracts(root);
+    const next = doctor.errors === 0
+        ? ["supacloud app compile", "supacloud app verify-plan --target <module>"]
+        : [
+            ...fixPlan.filter((repair) => repair.readiness === "preview").slice(0, 1).map((repair) => repair.command),
+            "supacloud app check --format json",
+            "supacloud app doctor --format json",
+        ];
+    const unwiredContracts = context ? [] : await findUnwiredContracts(root);
+    const scope = context ? {
+        target: context.subject, files: context.files,
+        omittedProjectDiagnostics: result.diagnostics.length - context.diagnostics.length,
+        notChecked: ["unwired contracts outside graph", "additional database source CLI check"],
+        generatedArtifactCheck: "project-wide",
+    } : undefined;
     if (args.format === "json") {
         return textResult(
-            JSON.stringify({ ok: doctor.errors === 0, autoFixable, inputRequired, manualFixes, fixPlan, unwiredContracts, ...doctor }, null, 2),
+            JSON.stringify({ ok: doctor.errors === 0, next, autoFixable, inputRequired, manualFixes, fixPlan, unwiredContracts,
+                ...(scope ? { scope } : {}), ...doctor }, null, 2),
             doctor.errors > 0,
         );
     }
     const lines = doctor.checks.map((check) => `${check.ok ? "OK" : "FAIL"} ${check.name}: ${check.detail}`);
+    if (scope) lines.unshift(`TARGET ${scope.target}; omitted project diagnostics=${scope.omittedProjectDiagnostics}; generated drift remains project-wide`);
     for (const diagnostic of doctor.diagnostics ?? []) {
         lines.push(formatDiagnostic(diagnostic));
     }
@@ -568,7 +806,7 @@ async function runDoctor(args: AppToolArguments): Promise<ToolResult> {
         ? "No blocking issues. Run `supacloud app compile` to refresh generated artifacts."
         : `${doctor.errors} blocking issue(s). Run \`supacloud app check\` for the full diagnostic list.`);
     if (autoFixable > 0) {
-        lines.push(`${autoFixable} preview-ready fix(es): run \`supacloud app doctor --format json\`, save each \`fix\`, then preview with \`supacloud app fix --fix <fix.json>\`. Add --write only after review.`);
+        lines.push(`${autoFixable} preview-ready fix(es): run \`supacloud app doctor --format json > doctor.json\`, then preview with \`supacloud app fix --from-doctor doctor.json --fix-index <n>\`. Add --write only after review.`);
     }
     if (inputRequired > 0 || manualFixes > 0) {
         lines.push(`${inputRequired} fix(es) require explicit input; ${manualFixes} require manual implementation.`);
@@ -590,12 +828,46 @@ async function runDoctor(args: AppToolArguments): Promise<ToolResult> {
 async function runFix(args: AppToolArguments): Promise<ToolResult> {
     const root = resolve(args.root || process.cwd());
     const fixPath = args.fix?.trim();
-    if (!fixPath) throw new Error("app fix requires --fix <path-to-diagnostic-fix.json>");
-    const parsed = JSON.parse(await readFile(resolve(root, fixPath), "utf8")) as unknown;
+    const doctorPath = args.from_doctor?.trim();
+    if (fixPath && doctorPath) throw new Error("app fix accepts either --fix or --from-doctor, not both");
+    if (!fixPath && !doctorPath) throw new Error("app fix requires --fix <fix.json> or --from-doctor <doctor.json> --fix-index <n>");
+    let parsed: unknown;
+    let source: "fix" | "doctor" = "fix";
+    let repair: { code?: string; readiness?: string; fix?: unknown } | undefined;
+    if (doctorPath) {
+        const rawIndex = args.fix_index;
+        if (!Number.isSafeInteger(rawIndex) || rawIndex === undefined || rawIndex < 0) {
+            throw new Error("app fix --from-doctor requires a non-negative --fix-index <n>");
+        }
+        const doctor = JSON.parse(await readFile(resolve(root, doctorPath), "utf8")) as unknown;
+        if (!doctor || typeof doctor !== "object" || !Array.isArray((doctor as { fixPlan?: unknown }).fixPlan)) {
+            throw new Error("Invalid doctor output: expected a fixPlan array");
+        }
+        const plan = (doctor as { fixPlan: unknown[] }).fixPlan;
+        if (rawIndex >= plan.length) throw new Error(`--fix-index ${rawIndex} is outside fixPlan (0..${plan.length - 1})`);
+        const entry = plan[rawIndex];
+        if (!entry || typeof entry !== "object" || !("fix" in entry)) {
+            throw new Error(`fixPlan[${rawIndex}] does not contain a fix payload`);
+        }
+        const repairEntry = entry as { code?: string; readiness?: string; fix?: unknown };
+        if (repairEntry.readiness !== undefined && repairEntry.readiness !== "preview") {
+            throw new Error(`fixPlan[${rawIndex}] is ${repairEntry.readiness}; only preview-ready repairs can be applied automatically`);
+        }
+        repair = repairEntry;
+        parsed = repairEntry.fix;
+        source = "doctor";
+    } else {
+        parsed = JSON.parse(await readFile(resolve(root, fixPath!), "utf8")) as unknown;
+    }
     const write = args.write === true;
     const applied = await applyDiagnosticFix(parsed as Parameters<typeof applyDiagnosticFix>[0], { rootDir: root, dryRun: !write });
     return textResult(JSON.stringify({
         ok: true,
+        source,
+        ...(source === "doctor" ? {
+            index: args.fix_index,
+            ...(repair?.code === undefined ? {} : { code: repair.code }),
+        } : {}),
         written: write,
         file: applied.file,
         changed: applied.changed,
@@ -809,10 +1081,15 @@ async function runCheck(args: AppToolArguments): Promise<ToolResult> {
         strict: args.strict ?? loadedConfig.strict ?? false,
     }, root);
     const result = await checkProject(config);
-    const hasError = result.diagnostics.some((diagnostic) => diagnostic.severity === "error")
-        || result.mismatches.length > 0 || database?.ok === false;
+    const diagnosticError = result.diagnostics.some((diagnostic) => diagnostic.severity === "error");
+    const hasError = diagnosticError || result.mismatches.length > 0 || database?.ok === false;
+    const next = hasError
+        ? diagnosticError || database?.ok === false
+            ? ["supacloud app doctor --format json"]
+            : ["supacloud app compile", "supacloud app check --format json"]
+        : ["supacloud app verify-plan --target <module>"];
     if (args.format === "json") return textResult(JSON.stringify({
-        version: 1, ok: !hasError, source: "declaration", diagnostics: result.diagnostics,
+        version: 1, ok: !hasError, next, source: "declaration", diagnostics: result.diagnostics,
         mismatches: result.mismatches, upToDate: result.upToDate, written: [],
         modules: result.graph.modules.map((module) => module.name),
         ...(database ? { database } : {}),
@@ -1064,33 +1341,523 @@ async function runDelivery(args: AppToolArguments): Promise<ToolResult> {
     return textResult(JSON.stringify(result, null, 2), !result.ok);
 }
 
+function resultObject(result: ToolResult): Record<string, unknown> | undefined {
+    try {
+        const value: unknown = JSON.parse(result.content[0]?.text ?? "");
+        return value !== null && typeof value === "object" && !Array.isArray(value)
+            ? value as Record<string, unknown> : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function resultErrorCode(result: ToolResult, fallback: string): string {
+    const payload = resultObject(result);
+    const error = payload?.error;
+    const errorRecord = error !== null && typeof error === "object" && !Array.isArray(error)
+        ? error as Record<string, unknown> : undefined;
+    return typeof errorRecord?.code === "string" ? errorRecord.code : fallback;
+}
+
+function releasePhaseFailure(
+    phase: string,
+    result: ToolResult,
+    completed: Record<string, unknown>,
+): ToolResult {
+    const phaseResult = resultObject(result);
+    const upload = completed.upload !== null && typeof completed.upload === "object" && !Array.isArray(completed.upload)
+        ? completed.upload as Record<string, unknown> : undefined;
+    const configure = completed.configure !== null && typeof completed.configure === "object"
+        && !Array.isArray(completed.configure) ? completed.configure as Record<string, unknown> : undefined;
+    const releaseId = typeof upload?.release_id === "string" ? upload.release_id : undefined;
+    const configurationId = typeof configure?.configuration_id === "string" ? configure.configuration_id : undefined;
+    const payload: Record<string, unknown> = {
+        schema: RELEASE_CONTROL_RESPONSE_SCHEMA,
+        ok: false,
+        operation: "applications.release",
+        phase,
+        phases: completed,
+        error: { code: resultErrorCode(result, phase === "build" ? "BUILD_FAILED" : "PHASE_FAILED") },
+        ...(releaseId === undefined ? {} : { release_id: releaseId }),
+        ...(configurationId === undefined ? {} : { configuration_id: configurationId }),
+        ...(phaseResult === undefined ? {} : { phase_result: phaseResult }),
+    };
+    if (phaseResult?.activation_id !== undefined) payload.activation_id = phaseResult.activation_id;
+    if (typeof phaseResult?.deployment_id === "string") payload.deployment_id = phaseResult.deployment_id;
+    if (phaseResult?.expected_activation_id !== undefined) {
+        payload.expected_activation_id = phaseResult.expected_activation_id;
+    }
+    return textResult(JSON.stringify(payload, null, 2), true);
+}
+
+function releaseField(payload: Record<string, unknown> | undefined, container: string, field: string): string | undefined {
+    const value = payload?.[container];
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    return typeof record[field] === "string" ? record[field] : undefined;
+}
+
+async function runAppRelease(
+    request: AppToolArguments,
+    options: AppToolOptions,
+    delegate: (args: Record<string, unknown>) => Promise<ToolResult>,
+): Promise<ToolResult> {
+    const ref = request.ref ?? options.projectRef;
+    const id = request.id?.trim();
+    const environmentId = request.environment_id?.trim();
+    if (!ref || !id || !environmentId) {
+        throw new Error("app release requires --ref, --id and --environment_id (ref may come from context)");
+    }
+    if (!Value.Check(ApplicationIdSchema, id) || !Value.Check(ApplicationIdSchema, environmentId)) {
+        throw new Error("app release requires valid --id and --environment_id");
+    }
+    if (request.configuration_id !== undefined
+        && !Value.Check(ApplicationConfigurationIdSchema, request.configuration_id)) {
+        throw new Error("app release requires a valid --configuration_id");
+    }
+    if (request.configuration_path !== undefined && request.configuration_id !== undefined) {
+        throw new Error("app release accepts either --configuration_path or --configuration_id, not both");
+    }
+    if (request.activation_id !== undefined || request.expected_activation_id !== undefined) {
+        throw new Error("app release generates one activation identity; use app deploy for an exact retry");
+    }
+
+    const root = resolve(request.root || process.cwd());
+    const completed: Record<string, unknown> = {};
+    let manifestPath: string;
+    let buildReceipt: Record<string, unknown> | undefined;
+
+    if (request.skip_build === true) {
+        if (request.manifest_path === undefined) {
+            throw new Error("app release --skip_build requires --manifest_path");
+        }
+        manifestPath = resolve(root, request.manifest_path);
+        completed.build = { skipped: true, manifest_path: manifestPath };
+    } else {
+        const built = await runDelivery({ ...request, action: "build", root, format: "json" });
+        buildReceipt = resultObject(built);
+        if (built.isError || !buildReceipt?.ok || buildReceipt.manifest === null
+            || buildReceipt.manifest === undefined) {
+            return releasePhaseFailure("build", built, completed);
+        }
+        const loaded = await loadSupacloudConfig(root);
+        const resolved = resolveSupacloudConfig(loaded, root);
+        manifestPath = join(resolved.outDir, "delivery", "delivery.manifest.json");
+        completed.build = {
+            ok: true,
+            manifest_path: manifestPath,
+            written: Array.isArray(buildReceipt.written) ? buildReceipt.written.length : 0,
+        };
+    }
+
+    const uploadArgs = {
+        action: "upload_release",
+        ref, id, manifest_path: manifestPath,
+    };
+    validateToolArguments(APPLICATION_TOOL_SCHEMA, uploadArgs);
+    const uploaded = await delegate(uploadArgs);
+    const uploadReceipt = resultObject(uploaded);
+    if (uploaded.isError || !uploadReceipt?.ok) {
+        return releasePhaseFailure("upload", uploaded, completed);
+    }
+    const releaseId = releaseField(uploadReceipt, "release", "release_id");
+    if (!releaseId) return releasePhaseFailure("upload", releaseControlFailure(
+        "applications.upload_release", "INVALID_RESPONSE", null, { project_ref: ref, application_id: id },
+    ), completed);
+    completed.upload = { ok: true, release_id: releaseId };
+
+    let configurationId = request.configuration_id;
+    let configurationWrite: unknown;
+    const activationId = crypto.randomUUID();
+    if (request.configuration_path !== undefined) {
+        const configurationPath = resolve(root, request.configuration_path);
+        try {
+            configurationWrite = parseApplicationConfigurationWrite(await Bun.file(configurationPath).json());
+            configurationId = (configurationWrite as { configuration_id: string }).configuration_id;
+        } catch {
+            return releasePhaseFailure("configure", releaseControlFailure(
+                "applications.deploy_application", "INVALID_RESPONSE", null,
+                { project_ref: ref, application_id: id, environment_id: environmentId },
+            ), completed);
+        }
+        completed.configure = { delegated: true, configuration_id: configurationId };
+    } else {
+        completed.configure = {
+            delegated: false,
+            resolved_by: "platform",
+            ...(configurationId === undefined ? {} : { configuration_id: configurationId }),
+        };
+    }
+
+    const deployArgs = {
+        action: "deploy_application",
+        ref, id, environment_id: environmentId, release_id: releaseId,
+        mutation_id: activationId,
+        ...(configurationId === undefined ? {} : { configuration_id: configurationId }),
+        ...(configurationWrite === undefined ? {} : { configuration_write: configurationWrite }),
+        ...(request.web_release === undefined ? {} : { web_release: request.web_release }),
+    };
+    validateToolArguments(APPLICATION_TOOL_SCHEMA, deployArgs);
+    if (!options.projectDeployment) {
+        throw new Error("Application release requires the unified project deployment handler");
+    }
+    const deployed = await options.projectDeployment(deployArgs);
+    const deployReceipt = resultObject(deployed);
+    const resolvedConfigurationId = typeof deployReceipt?.configuration_id === "string"
+        ? deployReceipt.configuration_id : undefined;
+    if (resolvedConfigurationId !== undefined) {
+        configurationId = resolvedConfigurationId;
+        const configure = completed.configure;
+        completed.configure = configure && typeof configure === "object" && !Array.isArray(configure)
+            ? { ...configure, configuration_id: resolvedConfigurationId }
+            : { delegated: false, resolved_by: "platform", configuration_id: resolvedConfigurationId };
+    }
+    if (deployed.isError || !deployReceipt?.ok) {
+        return releasePhaseFailure("deploy", deployed, completed);
+    }
+    completed.deploy = deployReceipt;
+    const result = {
+        schema: RELEASE_CONTROL_RESPONSE_SCHEMA,
+        ok: true,
+        operation: "applications.release",
+        ...(deployReceipt.status === "accepted" ? { status: "accepted" } : {}),
+        project_ref: ref,
+        application_id: id,
+        environment_id: environmentId,
+        release_id: releaseId,
+        ...(typeof deployReceipt.deployment_id === "string" ? { deployment_id: deployReceipt.deployment_id } : {}),
+        ...(configurationId === undefined ? {} : { configuration_id: configurationId }),
+        manifest_path: manifestPath,
+        build: buildReceipt ? completed.build : { skipped: true, manifest_path: manifestPath },
+        phases: completed,
+        no_op: deployReceipt.action === "no-op" || deployReceipt.no_op === true,
+        ...(deployReceipt.status === "accepted" ? {} : { execution_performed: deployReceipt.execution_performed === true }),
+        ...(typeof deployReceipt.activation_id === "string" ? { activation_id: deployReceipt.activation_id } : {}),
+        ...(deployReceipt.web === undefined ? {} : { web: deployReceipt.web }),
+    };
+    return request.format === "json"
+        ? textResult(JSON.stringify(result, null, 2))
+        : textResult([
+            `${ref}/${id}/${environmentId}: ${deployReceipt.status === "accepted" ? "accepted" : result.no_op ? "no-op" : "released"}`,
+            `Release: ${releaseId}`,
+            `Configuration: ${configurationId}`,
+            `Activation: ${result.activation_id ?? "not performed"}`,
+            ...(result.deployment_id === undefined ? [] : [`Deployment: ${result.deployment_id}`]),
+            ...(deployReceipt.status === "accepted" && result.deployment_id !== undefined
+                ? [`Status: supacloud deploy --status ${result.deployment_id}`] : []),
+            `Build: ${request.skip_build ? "skipped" : "completed"}`,
+        ].join("\n"));
+}
+
+function formatReleaseTransfer(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("ok" in payload) || payload.ok !== true) return result;
+        const plan = "plan" in payload ? parseApplicationReleaseTransferPlan(payload.plan) : null;
+        const receipt = !plan && "transfer" in payload ? parseApplicationReleaseTransferResult(payload.transfer) : null;
+        const data = plan ?? receipt;
+        if (!data) return result;
+        return textResult([
+            `${data.project_ref}/${data.application_id}: ${plan ? plan.action === "no-op" ? "No changes" : "Transfer required" : "Artifact transferred"}`,
+            `Source: ${data.source.project_ref} / ${data.source.release_id}`,
+            `Target release: ${data.candidate_release_id}`,
+            `Manifest: ${data.source.manifest_sha256}`,
+            "Activation: not performed",
+        ].join("\n"));
+    } catch { return result; }
+}
+const historyReceiptSchema = Type.Object({
+    schema: Type.Literal(RELEASE_CONTROL_RESPONSE_SCHEMA),
+    ok: Type.Literal(true),
+    operation: Type.Literal("applications.get_history"),
+    project_ref: Type.String(), application_id: Type.String(), environment_id: Type.String(),
+    history: ApplicationActivationHistorySchema,
+}, { additionalProperties: false });
+
+function historyText(result: ToolResult, request: AppToolArguments, projectRef: string | undefined): ToolResult {
+    if (result.isError) return result;
+    try {
+        if (result.content.length !== 1 || result.content[0]!.text.length > 262_144) throw new Error();
+        const receipt: unknown = JSON.parse(result.content[0]!.text);
+        if (!Value.Check(historyReceiptSchema, receipt)) throw new Error();
+        const history = parseApplicationActivationHistory(receipt.history);
+        if (history.project_ref !== projectRef || history.application_id !== request.id
+            || history.environment_id !== request.environment_id
+            || receipt.project_ref !== history.project_ref || receipt.application_id !== history.application_id
+            || receipt.environment_id !== history.environment_id) throw new Error();
+        const lines = [
+            `Activation History: ${history.project_ref}/${history.application_id}/${history.environment_id}`,
+            `Active activation: ${history.active_activation_id ?? "none"}`,
+            "",
+        ];
+        if (history.activations.length === 0) lines.push("No successful activations on this page.");
+        else {
+            lines.push(`${"Completed (UTC)".padEnd(29)}  ${"State".padEnd(7)}  ${"Activation ID".padEnd(36)}  Release (12)`);
+            for (const entry of history.activations) lines.push(
+                `${entry.completed_at.padEnd(29)}  ${(entry.is_active ? "current" : "-").padEnd(7)}  ${entry.activation_id}  ${entry.release_id.slice(0, 12)}`,
+            );
+        }
+        if (history.next_cursor) lines.push("", `Next cursor: ${history.next_cursor}`);
+        return textResult(lines.join("\n"));
+    } catch {
+        return releaseControlFailure("applications.get_history", "INVALID_RESPONSE", null);
+    }
+}
+
+function formatRemoteDeployPlan(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("ok" in payload) || payload.ok !== true
+            || !("plan" in payload)) return result;
+        const plan = parseApplicationDeployPlan(payload.plan);
+        const names = (values: string[], prefix: string) => values.map(name => `${prefix}${name}`);
+        const targets = [
+            ...names(plan.changes.targets.added, "+"), ...names(plan.changes.targets.removed, "-"),
+            ...names(plan.changes.targets.changed, "~"),
+        ];
+        return textResult([
+            `${plan.project_ref}/${plan.application_id} [${plan.environment_id}]: ${plan.action === "no-op" ? "No changes" : "Activation required"}`,
+            `Release: ${plan.candidate.release_id} (${plan.changes.release ? "changed" : "unchanged"})`,
+            `Configuration: ${plan.candidate.configuration_id} (${plan.changes.configuration ? "changed" : "unchanged"})`,
+            `Targets: ${targets.length ? targets.join(", ") : "unchanged"}`,
+            `Migrations: ${!plan.migrations.ledger_compatible ? "ledger conflict" : plan.migrations.project_migrations_applied ? "applied" : "pending"}`,
+            `Provisioning: ${plan.migrations.operator_provisioning}`,
+            `Expected activation: ${plan.expected_activation_id ?? "absent"}`,
+        ].join("\n"));
+    } catch { return result; }
+}
+
+function formatPromotionPlan(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object" || !("plan" in payload)) return result;
+        const plan = parseApplicationPromotionPlan(payload.plan);
+        return textResult([
+            `${plan.project_ref}/${plan.application_id}/${plan.environment_id}: ${plan.action}`,
+            `Source: ${plan.source.project_ref}/${plan.source.environment_id}`,
+            ...(plan.blockers.length ? [`Blocked: ${plan.blockers.join(", ")}`] : []),
+            ...(plan.steps.length ? [`Next: ${plan.steps.join(" -> ")}`] : []),
+            "Execution: not performed",
+        ].join("\n"));
+    } catch { return result; }
+}
+
+function formatPromotionExecution(result: ToolResult): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object") return result;
+        const operation = "operation" in payload && typeof payload.operation === "string" ? payload.operation : "";
+        if (operation !== "applications.promote_application") return result;
+        if ("result" in payload && Value.Check(ApplicationPromotionResultSchema, payload.result)) {
+            const envelope = payload as Record<string, unknown>;
+            const receipt = payload.result;
+            if (receipt.project_ref !== envelope.project_ref || receipt.application_id !== envelope.application_id
+                || receipt.environment_id !== envelope.environment_id || receipt.mutation_id !== envelope.mutation_id
+                || receipt.plan_sha256 !== envelope.plan_sha256) return result;
+            return textResult([
+                `${String(envelope.project_ref)}/${String(envelope.application_id)}/${String(envelope.environment_id)}: promoted`,
+                `Mutation: ${String(envelope.mutation_id)}`,
+                `Activation: ${String(receipt.activation_id)}`,
+                `Replayed: ${String(receipt.replayed)}`,
+            ].join("\n"));
+        }
+    } catch { /* Keep the structured receipt on parse failure. */ }
+    return result;
+}
+
+function formatWorkflowObservation(result: ToolResult, action: AppToolArguments["action"]): ToolResult {
+    if (result.isError) return result;
+    try {
+        const payload: unknown = JSON.parse(result.content[0]?.text ?? "");
+        if (!payload || typeof payload !== "object") return result;
+        const data = payload as Record<string, unknown>;
+        if (typeof data.project_ref !== "string" || typeof data.application_id !== "string"
+            || typeof data.environment_id !== "string") return result;
+        const identity = {
+            project_ref: data.project_ref, application_id: data.application_id, environment_id: data.environment_id,
+        };
+        const label = `${identity.project_ref}/${identity.application_id}/${identity.environment_id}`;
+        if (action === "promote-status" || action === "promote-reconcile") {
+            if (!data.mutation || typeof data.mutation !== "object"
+                || !("mutation_id" in data.mutation) || typeof data.mutation.mutation_id !== "string") return result;
+            const status = parsePromotionStatus({ ...identity, mutation: data.mutation, promotion: data.promotion },
+                { ...identity, mutation_id: data.mutation.mutation_id });
+            return textResult([
+                `${label}: ${status.mutation.status}`,
+                `Mutation: ${status.mutation.mutation_id}`,
+                `Phase: ${status.promotion.phase ?? "not recorded"}`,
+                ...(status.promotion.backup_id ? [`Backup: ${status.promotion.backup_id}`] : []),
+            ].join("\n"));
+        }
+        if (action === "preview-list" || action === "previews") {
+            const list = parsePreviewList({ ...identity, previews: data.previews }, identity);
+            return textResult([`${label}: ${list.previews.length} preview(s)`,
+                ...list.previews.map(preview => `${preview.preview_id}  ${preview.status}  ${preview.resources.database_branch.branch_ref}`),
+            ].join("\n"));
+        }
+        if (["preview-plan", "preview-create", "preview-status", "preview-reconcile", "preview-cleanup"].includes(action)) {
+            const preview = parsePreviewReceipt(data.preview ?? data, identity);
+            return textResult([
+                `${label}: ${preview.status}`,
+                `Preview: ${preview.preview_id}`,
+                `Branch: ${preview.resources.database_branch.branch_ref} (${preview.resources.database_branch.data_mode})`,
+                `Cleanup: ${preview.cleanup.completed ? "completed" : preview.cleanup.required ? "required" : "not required"}`,
+            ].join("\n"));
+        }
+    } catch { /* Preserve the validated structured response when no summary is available. */ }
+    return result;
+}
+
+async function runPromotion(
+    request: AppToolArguments,
+    options: AppToolOptions,
+    delegate: (args: Record<string, unknown>) => Promise<ToolResult>,
+): Promise<ToolResult> {
+    const ref = request.ref ?? options.projectRef;
+    if (request.mutation_id !== undefined) throw new Error("app promote generates a new mutation ID; use promote-status or promote-reconcile to inspect an existing mutation");
+    const { format, ...remoteRequest } = request;
+    const planArgs = {
+        ...remoteRequest, action: "get_promotion_plan", ref,
+    };
+    validateToolArguments(APPLICATION_TOOL_SCHEMA, planArgs);
+    const planned = await delegate(planArgs);
+    if (planned.isError) return planned;
+    let payload: unknown;
+    try { payload = JSON.parse(planned.content[0]?.text ?? ""); }
+    catch { return textResult("Promotion plan response was not valid JSON.", true); }
+    if (!payload || typeof payload !== "object" || !("plan" in payload)) {
+        return textResult("Promotion plan response was invalid.", true);
+    }
+    let plan;
+    try { plan = parseApplicationPromotionPlan(payload.plan); }
+    catch { return textResult("Promotion plan failed immutable validation.", true); }
+    const identity = { project_ref: ref, application_id: request.id, environment_id: request.environment_id };
+    if (plan.project_ref !== ref || plan.application_id !== request.id || plan.environment_id !== request.environment_id
+        || plan.source.project_ref !== request.source_ref || plan.source.environment_id !== request.source_environment_id
+        || plan.source.release_id !== request.source_release_id
+        || request.configuration_id !== undefined && plan.target.configuration_id !== request.configuration_id) {
+        return releaseControlFailure("applications.promote_application", "INVALID_RESPONSE", null, identity);
+    }
+    if (plan.action === "no-op") {
+        const noOp = releaseControlSuccess("applications.promote_application", {
+            project_ref: plan.project_ref, application_id: plan.application_id,
+            environment_id: plan.environment_id, plan, no_op: true, execution_performed: false,
+        });
+        return format === "json" ? noOp
+            : textResult(`${plan.project_ref}/${plan.application_id}/${plan.environment_id}: no-op\nExecution: skipped`);
+    }
+    if (plan.blockers.some(code => !["MIGRATION_PENDING", "BACKUP_REQUIRED"].includes(code))) {
+        return releaseControlFailure("applications.promote_application", "MUTATION_NOT_SUCCEEDED", null,
+            { ...identity, plan, execution_performed: false });
+    }
+    if (!plan.target.configuration_id) return textResult("Promotion plan has no target configuration revision.", true);
+    const mutationId = crypto.randomUUID();
+    const executeArgs = {
+        ...remoteRequest, action: "promote_application", ref,
+        mutation_id: mutationId, source_ref: plan.source.project_ref,
+        source_environment_id: plan.source.environment_id, source_release_id: plan.source.release_id,
+        configuration_id: plan.target.configuration_id, plan,
+    };
+    validateToolArguments(APPLICATION_TOOL_SCHEMA, executeArgs);
+    const result = await delegate(executeArgs);
+    return format === "json" ? result : formatPromotionExecution(result);
+}
+
 export async function runAppTool(request: AppToolArguments, options: AppToolOptions = {}): Promise<ToolResult> {
     if ((request.dry_run !== undefined && request["dry-run"] !== undefined)
         || (request.register_in !== undefined && request["register-in"] !== undefined)
         || (request.database_url !== undefined && request["database-url"] !== undefined)) {
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "Do not combine hyphenated and underscored aliases of the same flag");
     }
+    const {
+        "dry-run": dryRunAlias,
+        "register-in": registerInAlias,
+        "database-url": databaseUrlAlias,
+        ...canonicalRequest
+    } = request;
     request = {
-        ...request,
-        ...(request["dry-run"] === undefined ? {} : { dry_run: request["dry-run"] }),
-        ...(request["register-in"] === undefined ? {} : { register_in: request["register-in"] }),
-        ...(request["database-url"] === undefined ? {} : { database_url: request["database-url"] }),
+        ...canonicalRequest,
+        ...(dryRunAlias === undefined ? {} : { dry_run: dryRunAlias }),
+        ...(registerInAlias === undefined ? {} : { register_in: registerInAlias }),
+        ...(databaseUrlAlias === undefined ? {} : { database_url: databaseUrlAlias }),
     };
+    if (request.events !== undefined || request.request_id !== undefined) {
+        if (request.action !== "context" || !request.events?.trim() || !request.target?.trim()
+            || !request.request_id || !/^[A-Za-z0-9._:-]{1,256}$/.test(request.request_id)
+            || request.format !== "json" || request.write !== undefined) {
+            throw new Error("Execution context requires app context, --target, --events, --request-id and --format json; --write is not supported");
+        }
+    }
     if ((request.dry_run !== undefined || request.register_in !== undefined) && request.action !== "generate") {
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--dry-run and --register-in apply only to app generate");
     }
     if (request.database_url !== undefined && request.action !== "dev" && request.action !== "watch") {
         throw new ScaffoldError("SCAFFOLD_OPTION_INVALID", "--database-url applies only to app dev --profile integration");
     }
+    if (request.action === "promote") {
+        const delegate = options.getApplications?.();
+        if (!delegate) return textResult("App remote actions require a Management API context.", true);
+        return runPromotion(request, options, delegate);
+    }
+    if (request.action === "release") {
+        const delegate = options.getApplications?.();
+        if (!delegate) return textResult("App remote actions require a Management API context.", true);
+        return runAppRelease(request, options, delegate);
+    }
     if (Object.hasOwn(REMOTE_APP_ACTIONS, request.action)) {
         const delegate = options.getApplications?.();
         if (!delegate) return textResult("App remote actions require a Management API context.", true);
-        const action = REMOTE_APP_ACTIONS[request.action as keyof typeof REMOTE_APP_ACTIONS];
-        const args = parseToolArguments(APPLICATION_TOOL_SCHEMA, {
-            ...request, action, ref: request.ref ?? options.projectRef,
-        });
-        // Preserve the original receipt, including unknown outcomes. Never infer a rollback or retry.
-        return delegate(args);
+        const promotionDiff = request.action === "diff"
+            && request.source_ref !== undefined
+            && request.source_environment_id !== undefined
+            && request.source_release_id !== undefined;
+        const action = promotionDiff ? "get_promotion_plan"
+            : REMOTE_APP_ACTIONS[request.action as keyof typeof REMOTE_APP_ACTIONS];
+        const { format, ...remoteRequest } = request;
+        const args = {
+            ...remoteRequest, action, ref: request.ref ?? options.projectRef,
+        };
+        validateToolArguments(APPLICATION_TOOL_SCHEMA, args);
+        const result = await delegate(args);
+        if (request.action === "evidence" && format !== "json" && !result.isError) {
+            try {
+                const payload: unknown = JSON.parse(result.content[0]!.text);
+                if (payload === null || typeof payload !== "object"
+                    || !("project_ref" in payload) || payload.project_ref !== args.ref
+                    || !("application_id" in payload) || payload.application_id !== request.id
+                    || !("environment_id" in payload) || payload.environment_id !== request.environment_id
+                    || !("evidence" in payload)) throw new Error();
+                if (payload.evidence === null) return textResult(
+                    "DEPLOYMENT incomplete: no recorded evidence. Read runtime status and obtain authenticated smoke and recovery evidence.",
+                );
+                const evidence = parseDeploymentEvidence(payload.evidence);
+                if (evidence.scope.project_ref !== args.ref || evidence.scope.application_id !== request.id
+                    || evidence.scope.environment_id !== request.environment_id) throw new Error();
+                return textResult(formatDeploymentEvidence(evidence));
+            } catch {
+                return textResult("DEPLOYMENT unknown: invalid or mismatched evidence; no mutation was attempted.", true);
+            }
+        }
+        if (request.action === "history" && format !== "json") {
+            return historyText(result, request, args.ref);
+        }
+        if ((request.action === "deploy-plan" || request.action === "diff") && format !== "json"
+            && (request.action === "deploy-plan" || request.source_ref === undefined
+                || request.source_environment_id === undefined || request.source_release_id === undefined)) {
+            return formatRemoteDeployPlan(result);
+        }
+        if (request.action === "promote-plan" || (request.action === "diff"
+            && request.source_ref !== undefined && request.source_environment_id !== undefined
+            && request.source_release_id !== undefined)) {
+            if (!result.isError && format !== "json") return formatPromotionPlan(result);
+        }
+        return (request.action === "transfer-plan" || request.action === "transfer") && format !== "json"
+            ? formatReleaseTransfer(result) : format !== "json"
+                ? formatWorkflowObservation(result, request.action) : result;
     }
     switch (request.action) {
         case "verify-plan": {
@@ -1130,36 +1897,49 @@ export async function runAppTool(request: AppToolArguments, options: AppToolOpti
 }
 
 export function registerAppTools(server: ToolServer, options: AppToolOptions = {}): void {
-    server.tool(
+    registerTool(server,
         "app",
         "Application authoring and delivery. Plan is read-only; build, upload and configure never deploy. Deploy/rollback explicitly activate a release; rollback never downgrades schema.",
         {
             ...REMOTE_APP_SCHEMA,
             action: withDescription(stringEnum(["init", "generate", "dev", "watch", "verify-plan", "compile", "check", "graph", "explain", "export-tools", "context", "doctor", "fix",
-                "plan", "build", "upload", "configure", "deploy", "status", "rollback", "reconcile", "retire"]), "App action; upload/configure only prepare, rollback activates an explicit old release without schema downgrade"),
-            kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
-            template: optional(stringEnum(["minimal", "http", "command", "edge"]), "[init] Minimal application by default; explicit http/command/edge recipes"),
+                "plan", "build", "release", "upload", "configure", "transfer-plan", "transfer", "promote-plan", "deploy", "deploy-plan", "diff", "status", "evidence", "rollback", "rollback-plan", "history", "reconcile", "retire", "logs",
+                "preview-plan", "preview", "previews", "preview-list", "preview-create", "preview-status", "preview-cleanup",
+                "preview-reconcile", "promote", "promote-status", "promote-reconcile"]), "App action; promote obtains and verifies its plan before one mutation request"),
+            kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource", "feature"]), "[generate] Scaffold kind"),
+            template: optional(stringEnum(["minimal", "http", "command", "edge", "model-command"]), "[init] Minimal by default; http/edge are explicit recipes; command adds the native-SQL reference; model-command adds ZenStack HTTP/worker commands"),
             name: optional(Type.String(), "[init/generate] Project or object name"),
             module: optional(Type.String(), "[generate] Target feature module (required for command/query/controller)"),
+            permission: optional(Type.String(), "[generate feature] Explicit approval permission; not inferred from name"),
+            read_permission: optional(Type.String(), "[generate feature] Explicit read permission; not inferred from name"),
+            rpc: optional(Type.String(), "[generate feature] Explicit durable RPC capability; must be registered by the host"),
+            database_source: optional(Type.String(), "[generate feature] Project-relative database source path"),
+            database_table: optional(Type.String(), "[generate feature] Schema-qualified table owned by the feature"),
+            database_type: optional(Type.String(), "[generate feature] Exported row type derived from the database source"),
             dir: optional(Type.String(), "[generate] Feature root directory (default: src/features)"),
-            force: optional(Type.Boolean(), "[generate] Overwrite a single regular file; resource/controller never overwrite"),
+            force: optional(Type.Boolean(), "[generate] Overwrite a single regular file; resource/feature/controller never overwrite"),
             dry_run: optional(Type.Boolean(), "[generate] Validate and preview the complete change set without writing"),
             "dry-run": optional(Type.Boolean(), "[generate] CLI alias of dry_run"),
-            register_in: optional(Type.String(), "[generate] Existing parent module file for module/resource; uses the compiler AST editor"),
+            register_in: optional(Type.String(), "[generate] Existing parent module file for module/resource/feature; uses the compiler AST editor"),
             "register-in": optional(Type.String(), "[generate] CLI alias of register_in"),
-            root: optional(Type.String(), "[dev/plan/build/compile/check] Project directory containing supacloud.config.ts (default: current directory)"),
+            root: optional(Type.String(), "[dev/plan/build/release/compile/check] Project directory containing supacloud.config.ts (default: current directory)"),
             include: optional(Type.String(), "[dev/compile/check] Comma-separated glob patterns for source files"),
             out_dir: optional(Type.String(), "[dev/compile/plan/build/export-tools] Output directory (default: configured outDir)"),
             strict: optional(Type.Boolean(), "[dev/compile/check] Promote warnings to errors"),
-            format: optional(stringEnum(["text", "json"]), "[dev/generate/compile/check/plan/graph/export-tools] Output format (default: text)"),
+            format: optional(stringEnum(["text", "json"]), "[*] Output format (default: text)"),
             profile: optional(stringEnum(["fast", "integration"]), "[dev] Run dev or dev:integration; integration verifies an explicit loopback database"),
             once: optional(Type.Boolean(), "[dev] Validate and report once without watching"),
             watch: optional(Type.Boolean(), "[dev] Watch for changes (default: true; --once disables)"),
             database_url: optional(Type.String(), "[dev] Explicit loopback integration URL; watch/once only inspect its shape"),
             "database-url": optional(Type.String(), "[dev] CLI alias of database_url"),
             target: optional(Type.String(), "[explain/context/verify-plan] Provider class name / token name / command name / job name / module name"),
+            events: optional(Type.String(), "[context] Project-relative execution metadata JSON or generated JSON-lines file"),
+            request_id: optional(Type.String(), "[context] Opaque request ID or Workflow run ID selected from --events"),
             fix: optional(Type.String(), "[fix] Path to a DiagnosticFix JSON file produced by `doctor --format json`"),
+            from_doctor: optional(Type.String(), "[fix] Read one fix from a doctor --format json output"),
+            fix_index: optional(Type.Number({ minimum: 0, multipleOf: 1 }), "[fix] Zero-based fixPlan index used with --from-doctor"),
             write: optional(Type.Boolean(), "[fix] Write the fix to disk (default: preview only)"),
+            skip_build: optional(Type.Boolean(), "[release] Reuse --manifest_path instead of running the local delivery build"),
         },
         (request) => runAppTool(request, options),
     );
@@ -1174,14 +1954,20 @@ const APP_ALIAS_ACTIONS = ["generate", "compile", "check", "graph", "explain", "
  */
 export function registerAppAliases(server: ToolServer): void {
     const schema: ToolSchema = {
-        kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource"]), "[generate] Scaffold kind"),
+        kind: optional(stringEnum(["module", "command", "query", "controller", "job", "contract", "resource", "feature"]), "[generate] Scaffold kind"),
         name: optional(Type.String(), "[generate] Object name"),
         module: optional(Type.String(), "[generate] Target feature module"),
+        permission: optional(Type.String(), "[generate feature] Explicit approval permission; not inferred from name"),
+        read_permission: optional(Type.String(), "[generate feature] Explicit read permission; not inferred from name"),
+        rpc: optional(Type.String(), "[generate feature] Explicit durable RPC capability; must be registered by the host"),
+        database_source: optional(Type.String(), "[generate feature] Project-relative database source path"),
+        database_table: optional(Type.String(), "[generate feature] Schema-qualified table owned by the feature"),
+        database_type: optional(Type.String(), "[generate feature] Exported row type derived from the database source"),
         dir: optional(Type.String(), "[generate] Feature root directory (default: src/features)"),
-        force: optional(Type.Boolean(), "[generate] Overwrite a single regular file; resource/controller never overwrite"),
+        force: optional(Type.Boolean(), "[generate] Overwrite a single regular file; resource/feature/controller never overwrite"),
         dry_run: optional(Type.Boolean(), "[generate] Validate and preview the complete change set without writing"),
         "dry-run": optional(Type.Boolean(), "[generate] CLI alias of dry_run"),
-        register_in: optional(Type.String(), "[generate] Existing parent module file for module/resource; uses the compiler AST editor"),
+        register_in: optional(Type.String(), "[generate] Existing parent module file for module/resource/feature; uses the compiler AST editor"),
         "register-in": optional(Type.String(), "[generate] CLI alias of register_in"),
         root: optional(Type.String(), "Project directory containing supacloud.config.ts (default: current directory)"),
         include: optional(Type.String(), "[compile/check] Comma-separated glob patterns for source files"),
@@ -1189,11 +1975,16 @@ export function registerAppAliases(server: ToolServer): void {
         strict: optional(Type.Boolean(), "[compile/check] Promote warnings to errors"),
         format: optional(stringEnum(["text", "json"]), "Output format (default: text)"),
         target: optional(Type.String(), "[explain/context] Provider class name / token name / command name / job name / module name"),
+        events: optional(Type.String(), "[context] Project-relative execution metadata JSON or generated JSON-lines file"),
+        request_id: optional(Type.String(), "[context] Opaque request ID or Workflow run ID selected from --events"),
         fix: optional(Type.String(), "[fix] Path to a DiagnosticFix JSON file produced by `doctor --format json`"),
+        from_doctor: optional(Type.String(), "[fix] Read one fix from a doctor --format json output"),
+        fix_index: optional(Type.Number({ minimum: 0, multipleOf: 1 }), "[fix] Zero-based fixPlan index used with --from-doctor"),
         write: optional(Type.Boolean(), "[fix] Write the fix to disk (default: preview only)"),
     };
     for (const action of APP_ALIAS_ACTIONS) {
-        server.tool(action, `Top-level alias of \`app ${action}\`.`, schema, (request) => runAppTool({ ...request, action }));
+        registerTool(server, action, `Top-level alias of \`app ${action}\`.`, schema,
+            (request) => runAppTool({ ...request, action } as AppToolArguments));
     }
 }
 

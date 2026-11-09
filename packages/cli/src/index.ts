@@ -585,7 +585,6 @@ function createCliTools(context: ResolvedContext, confirmProduction?: string): T
         sshKey: context.sshKey,
         projectRef: context.projectRef || undefined,
         environment: context.environment,
-        runDatabase: databaseTools.database?.callback,
     })));
     assign(captureTools((server) => registerAuthTools(server as any, http)));
     assign(captureTools((server) => registerOAuthClientTools(server as any, http)));

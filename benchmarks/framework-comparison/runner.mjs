@@ -28,7 +28,7 @@ const allAdapters = [
   { id: "nestjs-express", label: "NestJS / Express", runtime: "node", validation: "TypeBox pipe" },
   { id: "nestjs-node", label: "NestJS / native Node", runtime: "node", validation: "TypeBox pipe" },
   { id: "elysia-native-contract-bun", label: "Elysia 2 native / same contracts / Bun", runtime: "bun", validation: "TypeBox native route schema" },
-  { id: "elysia-native-bare-bun", label: "Elysia 2 native bare baseline / Bun", runtime: "bun", validation: "none" },
+  { id: "gin-go", label: "Gin / Go 1.27", runtime: "go", validation: "go-playground/validator tags" },
 ];
 const only = options.only === undefined ? undefined : String(options.only).split(",").filter(Boolean);
 const adapters = only === undefined ? allAdapters : allAdapters.filter((adapter) => only.includes(adapter.id));
@@ -132,17 +132,25 @@ function positiveInteger(value, fallback, name) {
 }
 
 function commandFor(adapter) {
-  return adapter.runtime === "bun" ? (process.env.BUN_BIN ?? "bun") : process.execPath;
+  if (adapter.runtime === "bun") return process.env.BUN_BIN ?? "bun";
+  if (adapter.runtime === "go") return process.env.GO_BIN ?? "go";
+  return process.execPath;
+}
+
+function commandArgs(adapter, port) {
+  if (adapter.runtime === "go") return ["run", ".", "--port", String(port)];
+  return [serverPath, "--adapter", adapter.id, "--port", String(port)];
 }
 
 async function startServer(adapter) {
   const port = await freePort();
-  const child = spawn(commandFor(adapter), [serverPath, "--adapter", adapter.id, "--port", String(port)], {
-    cwd: root,
+  const child = spawn(commandFor(adapter), commandArgs(adapter, port), {
+    cwd: adapter.runtime === "go" ? resolve(root, "gin-server") : root,
     env: {
       ...process.env,
       NODE_NO_WARNINGS: "1",
     },
+    detached: adapter.runtime === "go",
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -184,7 +192,15 @@ function waitForExit(child) {
 
 async function stopServer(child) {
   if (child.exitCode !== null) return;
-  child.kill("SIGTERM");
+  if (child.spawnargs?.[0] === (process.env.GO_BIN ?? "go")) {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+  } else {
+    child.kill("SIGTERM");
+  }
   await Promise.race([
     waitForExit(child),
     new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out stopping benchmark server")), 10_000)),
@@ -280,13 +296,11 @@ function buildComparisons(rows) {
     const forScenario = rows.filter((row) => row.scenario === scenario.id);
     const supacloud = forScenario.find((row) => row.adapter === "supacloud-elysia-bun")?.summary;
     const nativeElysia = forScenario.find((row) => row.adapter === "elysia-native-contract-bun")?.summary;
-    const nativeBareElysia = forScenario.find((row) => row.adapter === "elysia-native-bare-bun")?.summary;
-    const native = forScenario.filter((row) => !["supacloud-elysia-bun", "elysia-native-contract-bun", "elysia-native-bare-bun"].includes(row.adapter));
+    const native = forScenario.filter((row) => !["supacloud-elysia-bun", "elysia-native-contract-bun"].includes(row.adapter));
     const fastestNative = native.reduce((best, row) => !best || row.summary.requestsPerSecondMedian > best.summary.requestsPerSecondMedian ? row : best, undefined);
     return {
       scenario: scenario.id,
       supacloudVsNativeElysia: comparison(supacloud, nativeElysia),
-      supacloudVsNativeElysiaBare: comparison(supacloud, nativeBareElysia),
       supacloudVsFastestNative: comparison(supacloud, fastestNative?.summary),
       fastestNativeAdapter: fastestNative?.adapter ?? null,
     };
@@ -319,10 +333,10 @@ function renderMarkdown(report) {
       lines.push(`| ${adapter?.label ?? row.adapter} | ${adapter?.validation ?? "-"} | ${format(row.summary.requestsPerSecondMedian)} | ${format(row.summary.p50MsMedian)} | ${format(row.summary.p95MsMedian)} | ${format(row.summary.p99MsMedian)} | ${row.summary.errorCount} |`);
     }
     const comparison = report.comparisons.find((item) => item.scenario === scenario.id);
-    if (comparison?.supacloudVsNativeElysia && comparison.supacloudVsNativeElysiaBare && comparison.supacloudVsFastestNative) {
+    if (comparison?.supacloudVsNativeElysia && comparison.supacloudVsFastestNative) {
       lines.push(
         "",
-        `SupaCloud vs native Elysia with the same contracts: RPS ${signed(comparison.supacloudVsNativeElysia.requestsPerSecondDeltaPercent)}%, P95 ${signed(comparison.supacloudVsNativeElysia.p95DeltaPercent)}%; vs bare Elysia: RPS ${signed(comparison.supacloudVsNativeElysiaBare.requestsPerSecondDeltaPercent)}%, P95 ${signed(comparison.supacloudVsNativeElysiaBare.p95DeltaPercent)}%; vs fastest native (${comparison.fastestNativeAdapter}): RPS ${signed(comparison.supacloudVsFastestNative.requestsPerSecondDeltaPercent)}%, P95 ${signed(comparison.supacloudVsFastestNative.p95DeltaPercent)}%.`,
+        `SupaCloud vs native Elysia with the same contracts: RPS ${signed(comparison.supacloudVsNativeElysia.requestsPerSecondDeltaPercent)}%, P95 ${signed(comparison.supacloudVsNativeElysia.p95DeltaPercent)}%; vs fastest native (${comparison.fastestNativeAdapter}): RPS ${signed(comparison.supacloudVsFastestNative.requestsPerSecondDeltaPercent)}%, P95 ${signed(comparison.supacloudVsFastestNative.p95DeltaPercent)}%.`,
       );
     }
     lines.push("");

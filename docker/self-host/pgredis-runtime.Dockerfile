@@ -1,10 +1,10 @@
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.4
 FROM oven/bun:${BUN_VERSION}
 
 WORKDIR /app/packages/pgredis-runtime
 
 COPY packages/pgredis-runtime/package.json packages/pgredis-runtime/bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun pm fetch && bun install --offline --frozen-lockfile
 
 COPY packages/pgredis-runtime ./
 

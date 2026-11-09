@@ -113,6 +113,7 @@ templates/base/volumes/db/data/
 # Bun lockfile
 bun.lock
 !packages/*/bun.lock
+!benchmarks/framework-comparison/bun.lock
 !packages/edge-runtime/
 packages/edge-runtime/supacloud-edge-runtime-*
 packages/pgredis-runtime/supacloud-pgredis-runtime-*

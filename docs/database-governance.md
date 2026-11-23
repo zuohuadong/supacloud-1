@@ -180,7 +180,6 @@ supacloud db operation-ownership adopt \
 当 `suggest` 的 `ambiguous` 和 `unknown` 数量归零后，再把配置从
 `ownership: "assist"` 切换为 `ownership: "enforce"`；强制模式会把未分类操作
 作为编译错误，而不是兼容性 warning。
-
 `buildDatabaseManifest` 会序列化 `operationOwnership`；`explainObject` 支持
 `public.cases.select` 形式的对象名，表的解释里也会列出已声明的操作归属。
 

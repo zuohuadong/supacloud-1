@@ -103,12 +103,29 @@ export function composeDataPlaneRuntimeStatus(
   };
 }
 
+/**
+ * Map a `systemctl is-active` token onto a runtime state.
+ *
+ * `failed` must not collapse into `stopped`: a unit that crashed on startup is
+ * an error an operator has to see, not a clean shutdown.
+ */
+export function mapSystemdUnitState(state: string): DataPlaneActualState {
+  switch (state.trim()) {
+    case "active":
+      return "running";
+    case "activating":
+    case "reloading":
+      return "starting";
+    case "failed":
+      return "error";
+    default:
+      return "stopped";
+  }
+}
+
 async function observeUnit(unit: string): Promise<DataPlaneActualState> {
   const result = await $`systemctl is-active ${unit}`.nothrow().quiet();
-  const state = result.stdout.toString().trim();
-  if (state === "active") return "running";
-  if (state === "activating" || state === "reloading") return "starting";
-  return "stopped";
+  return mapSystemdUnitState(result.stdout.toString());
 }
 
 async function probeHealth(port: number | null): Promise<"healthy" | "unhealthy" | "unknown"> {
@@ -200,11 +217,17 @@ export const dataPlaneRuntimeService = {
    * switch gate exist. The error codes are stable so routes can map them.
    */
   async start(_projectRef: string): Promise<never> {
+    if (!config.dataPlaneEnabled) {
+      throw new DataPlaneUnavailableError(
+        "DATA_PLANE_DISABLED",
+        "Data plane is disabled (DATA_PLANE_ENABLED=false); PostgREST remains the project REST data plane",
+      );
+    }
+    // Enabled but unprovisioned is a different operator problem than disabled,
+    // and conflating them sends operators to the wrong setting.
     throw new DataPlaneUnavailableError(
-      "DATA_PLANE_DISABLED",
-      config.dataPlaneEnabled
-        ? "Data plane start is not provisioned yet: configuration generation and port persistence land with the control-plane switch"
-        : "Data plane is disabled (DATA_PLANE_ENABLED=false); PostgREST remains the project REST data plane",
+      "DATA_PLANE_NOT_PROVISIONED",
+      "Data plane start is not provisioned yet: configuration generation and port persistence land with the control-plane switch",
     );
   },
 };

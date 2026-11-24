@@ -1,9 +1,13 @@
 // @supacloud-test-isolate
 import { describe, expect, test } from "bun:test";
+import { config } from "../../src/config";
 import {
+  DataPlaneUnavailableError,
   composeDataPlaneRuntimeStatus,
   dataPlaneDesiredState,
   dataPlaneUnit,
+  dataPlaneRuntimeService,
+  mapSystemdUnitState,
   type ProjectDataPlaneRow,
 } from "../../src/services/dataplane-runtime.service";
 import { renderDataPlaneSystemdTemplate } from "../../src/services/dataplane-systemd-template";
@@ -27,6 +31,20 @@ describe("data plane desired state", () => {
 
   test("only an explicit running desired state counts as running", () => {
     expect(dataPlaneDesiredState(row)).toBe("running");
+  });
+});
+
+describe("systemd unit state mapping", () => {
+  test("keeps a crashed unit visible as an error", () => {
+    expect(mapSystemdUnitState("failed\n")).toBe("error");
+  });
+
+  test("distinguishes running, starting and stopped", () => {
+    expect(mapSystemdUnitState("active")).toBe("running");
+    expect(mapSystemdUnitState("activating")).toBe("starting");
+    expect(mapSystemdUnitState("reloading")).toBe("starting");
+    expect(mapSystemdUnitState("inactive")).toBe("stopped");
+    expect(mapSystemdUnitState("unknown")).toBe("stopped");
   });
 });
 
@@ -102,5 +120,35 @@ describe("data plane systemd template", () => {
 
   test("does not depend on PostgREST", () => {
     expect(rendered.toLowerCase()).not.toContain("postgrest");
+  });
+});
+describe("data plane start gate", () => {
+  test("distinguishes disabled from enabled-but-unprovisioned", async () => {
+    const previous = config.dataPlaneEnabled;
+    try {
+      config.dataPlaneEnabled = false;
+      await expect(dataPlaneRuntimeService.start("proj_1")).rejects.toMatchObject({
+        code: "DATA_PLANE_DISABLED",
+      });
+
+      config.dataPlaneEnabled = true;
+      await expect(dataPlaneRuntimeService.start("proj_1")).rejects.toMatchObject({
+        code: "DATA_PLANE_NOT_PROVISIONED",
+      });
+    } finally {
+      config.dataPlaneEnabled = previous;
+    }
+  });
+
+  test("the refusal names the required next step", async () => {
+    const previous = config.dataPlaneEnabled;
+    config.dataPlaneEnabled = true;
+    try {
+      const error = await dataPlaneRuntimeService.start("proj_1").catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(DataPlaneUnavailableError);
+      expect((error as Error).message).toContain("configuration generation");
+    } finally {
+      config.dataPlaneEnabled = previous;
+    }
   });
 });

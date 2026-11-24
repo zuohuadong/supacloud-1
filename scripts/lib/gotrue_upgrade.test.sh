@@ -141,6 +141,17 @@ grep -Fqx 'Group=supacloud-%i' "$unit_path"
 [[ -f "${SUPACLOUD_GOTRUE_LAST_BACKUP_DIR}/project-config.dump" ]]
 [[ -f "${SUPACLOUD_GOTRUE_LAST_BACKUP_DIR}/secret-inventory.json" ]]
 
+# A pre-uploaded archive is checksum-verified without invoking the network downloader.
+write_binary v2.192.0
+download_source="$wrong_version_archive"
+: > "$download_log"
+export GOTRUE_LOCAL_ARCHIVE="$good_archive"
+supacloud_upgrade_gotrue_binary "$old_binary"
+[[ "$("$old_binary" version)" == v2.194.0 ]]
+[[ ! -s "$download_log" ]]
+unset GOTRUE_LOCAL_ARCHIVE
+download_source="$good_archive"
+
 # A target-version binary still repairs a stale unit inside the same transaction.
 : > "$systemctl_log"
 : > "$download_log"

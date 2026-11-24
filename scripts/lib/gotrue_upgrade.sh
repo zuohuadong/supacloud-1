@@ -330,7 +330,15 @@ supacloud_upgrade_gotrue_binary_transaction() (
     if [[ "$binary_requires_upgrade" == true ]]; then
         archive="${transaction_dir}/${SUPACLOUD_GOTRUE_RELEASE_ASSET}"
         staged_binary="${binary_path}.staged.$$"
-        supacloud_download_url "$SUPACLOUD_GOTRUE_RELEASE_URL" "$archive" || return 1
+        if [[ -n "${GOTRUE_LOCAL_ARCHIVE:-}" ]]; then
+            [[ -f "$GOTRUE_LOCAL_ARCHIVE" && ! -L "$GOTRUE_LOCAL_ARCHIVE" ]] || {
+                printf 'GOTRUE_LOCAL_ARCHIVE must be a regular local file: %s\n' "$GOTRUE_LOCAL_ARCHIVE" >&2
+                return 1
+            }
+            cp -- "$GOTRUE_LOCAL_ARCHIVE" "$archive" || return 1
+        else
+            supacloud_download_url "$SUPACLOUD_GOTRUE_RELEASE_URL" "$archive" || return 1
+        fi
         supacloud_install_pinned_tar_xz_binary "$archive" auth "$SUPACLOUD_GOTRUE_RELEASE_SHA256" \
             "$SUPACLOUD_GOTRUE_RELEASE_ARCH" "$staged_binary" || return 1
         [[ "$(supacloud_gotrue_binary_version "$staged_binary")" == "$target_version" ]] || {

@@ -607,6 +607,8 @@ describe("TenantRuntimeService auth-only apply boundary", () => {
     expect(poolUpdateSection).toContain("restartAndAttest");
     expect(poolUpdateSection).toContain("startOrRestartPostgrestGeneration");
     expect(poolUpdateSection).toContain("withTenantConfigLock");
+    expect(source).toContain("await this.postgrestController.resetFailed(ref)");
+    expect(source).toContain("retryError");
     expect(source).toContain("writeTenantRuntimeEnvironmentUnlocked");
   });
 

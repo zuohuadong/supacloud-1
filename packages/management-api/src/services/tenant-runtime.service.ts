@@ -488,6 +488,10 @@ class PostgrestRuntimeController {
         await runSystemctlOrThrow("restart", this.unit(ref));
     }
 
+    async resetFailed(ref: string): Promise<void> {
+        await runSystemctlOrThrow("reset-failed", this.unit(ref));
+    }
+
     async stop(ref: string): Promise<void> {
         await runSystemctlOrThrow("stop", this.unit(ref));
     }
@@ -749,9 +753,25 @@ class TenantRuntimeService {
     ): Promise<PostgrestRuntimeStatus> {
         const active = await this.postgrestController.isActive(ref);
         await this.postgrestController.enable(ref);
-        if (active) await this.postgrestController.restart(ref);
-        else await this.postgrestController.start(ref);
-        return this.healthyPostgrestGeneration(ref, port, expectedRevision);
+        try {
+            if (active) await this.postgrestController.restart(ref);
+            else await this.postgrestController.start(ref);
+            return await this.healthyPostgrestGeneration(ref, port, expectedRevision);
+        } catch (firstError: unknown) {
+            // A failed first start can trip the unit start limit even when the
+            // activation file is valid and the next start succeeds. Clear the
+            // failed state and retry once before declaring the generation lost.
+            await this.postgrestController.resetFailed(ref);
+            await this.postgrestController.start(ref);
+            try {
+                return await this.healthyPostgrestGeneration(ref, port, expectedRevision);
+            } catch (retryError: unknown) {
+                throw new AggregateError(
+                    [firstError, retryError],
+                    `PostgREST did not activate after a cleared start failure for ${ref}`,
+                );
+            }
+        }
     }
 
     private async restorePostgrestGeneration(

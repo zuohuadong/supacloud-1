@@ -50,6 +50,8 @@ describe("PostgREST health probe", () => {
 describe("PostgREST systemd activity parser", () => {
   test("accepts active, inactive, failed, and not-yet-installed results", () => {
     expect(parsePostgrestActivity("active\n", 0)).toBe(true);
+    expect(parsePostgrestActivity("activating\n", 3)).toBe(true);
+    expect(parsePostgrestActivity("reloading\n", 3)).toBe(true);
     expect(parsePostgrestActivity("inactive\n", 3)).toBe(false);
     expect(parsePostgrestActivity("failed\n", 3)).toBe(false);
     expect(parsePostgrestActivity("unknown\n", 3)).toBe(false);

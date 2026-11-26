@@ -451,6 +451,10 @@ export async function probePostgrestHealth(
 export function parsePostgrestActivity(output: string, exitCode: number): boolean {
     const activity = output.trim();
     if (exitCode === 0 && activity === "active") return true;
+    // A restart passes through `activating`; the process may already be up and
+    // the health probe decides readiness. Treating this as an error aborts the
+    // activation wait before systemd's own restart delay has elapsed.
+    if (exitCode === 3 && (activity === "activating" || activity === "reloading")) return true;
     // systemctl reports `unknown` with exit code 3 before the per-tenant unit
     // has been installed. That is a valid stopped state during first
     // provisioning and compensation cleanup.
@@ -760,17 +764,23 @@ class TenantRuntimeService {
         } catch (firstError: unknown) {
             // A failed first start can trip the unit start limit even when the
             // activation file is valid and the next start succeeds. Clear the
-            // failed state and retry once before declaring the generation lost.
-            await this.postgrestController.resetFailed(ref);
-            await this.postgrestController.start(ref);
-            try {
-                return await this.healthyPostgrestGeneration(ref, port, expectedRevision);
-            } catch (retryError: unknown) {
-                throw new AggregateError(
-                    [firstError, retryError],
-                    `PostgREST did not activate after a cleared start failure for ${ref}`,
-                );
+            // failed state, let systemd settle, and retry before declaring the
+            // generation lost.
+            let lastError: unknown = firstError;
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                await Bun.sleep(3000);
+                await this.postgrestController.resetFailed(ref);
+                await this.postgrestController.start(ref);
+                try {
+                    return await this.healthyPostgrestGeneration(ref, port, expectedRevision);
+                } catch (retryError: unknown) {
+                    lastError = retryError;
+                }
             }
+            throw new AggregateError(
+                [firstError, lastError],
+                `PostgREST did not activate after cleared start failures for ${ref}`,
+            );
         }
     }
 
